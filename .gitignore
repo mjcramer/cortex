@@ -1,0 +1,21 @@
+# Build output
+/bin/
+
+# Go test/coverage artifacts
+*.test
+*.out
+coverage.txt
+
+# Local environment
+.env
+.env.local
+
+# Editor / IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Local Claude Code state
+.claude/

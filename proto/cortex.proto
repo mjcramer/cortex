@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package cortex;
+
+option go_package = "github.com/mjcramer/cortex/internal/cortexpb;cortexpb";
+
+service CortexAgentService {
+  rpc SendEvent (AgentSignal) returns (Ack);
+  rpc WaitForResponse (SessionRequest) returns (HumanResponse);
+  rpc SubmitHumanResponse (HumanReply) returns (Ack);
+}
+
+message AgentSignal {
+  string agent = 1;
+  string session_id = 2;
+  string repo = 3;
+  string message = 4;
+}
+
+message SessionRequest {
+  string session_id = 1;
+  uint32 timeout_seconds = 2;
+}
+
+message HumanResponse {
+  string session_id = 1;
+  string response = 2;
+  string responder = 3;
+  string source = 4;
+  SessionStatus status = 5;
+}
+
+message HumanReply {
+  string session_id = 1;
+  string response = 2;
+  string responder = 3;
+  string source = 4;
+}
+
+message Ack {
+  bool accepted = 1;
+  string detail = 2;
+}
+
+enum SessionStatus {
+  SESSION_STATUS_UNSPECIFIED = 0;
+  RESPONDED = 1;
+  TIMED_OUT = 2;
+  NOT_FOUND = 3;
+  PENDING = 4;
+}
