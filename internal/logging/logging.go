@@ -1,7 +1,9 @@
 package logging
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -131,11 +133,13 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 	// %message
 	sb.WriteString(r.Message)
 
-	// Collect attrs (handler-attached + record-attached), pulling out err/error.
+	// Collect attrs (handler-attached + record-attached), pulling out err/error
+	// and rendering bulky values as readable blocks instead of escaped inline text.
 	var (
-		errVal  string
-		hasErr  bool
-		attrBuf strings.Builder
+		errVal   string
+		hasErr   bool
+		attrBuf  strings.Builder
+		blockBuf strings.Builder
 	)
 	emit := func(a slog.Attr) {
 		if a.Equal(slog.Attr{}) {
@@ -146,13 +150,17 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 			hasErr = true
 			return
 		}
+		if block, ok := formatBlockAttr(a); ok {
+			blockBuf.WriteString(block)
+			return
+		}
 		attrBuf.WriteByte(' ')
 		if h.color {
 			attrBuf.WriteString(ansiDim)
 		}
 		attrBuf.WriteString(a.Key)
 		attrBuf.WriteByte('=')
-		attrBuf.WriteString(quoteIfNeeded(a.Value.String()))
+		attrBuf.WriteString(quoteIfNeeded(inlineValue(a.Value)))
 		if h.color {
 			attrBuf.WriteString(ansiReset)
 		}
@@ -166,6 +174,7 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 	})
 	sb.WriteString(attrBuf.String())
 	sb.WriteByte('\n')
+	sb.WriteString(blockBuf.String())
 
 	// %boldRed(%exception) on the following line, if present.
 	if hasErr {
@@ -234,6 +243,90 @@ func levelColor(l slog.Level) string {
 
 func isErrKey(k string) bool {
 	return k == "err" || k == "error"
+}
+
+func inlineValue(v slog.Value) string {
+	if v.Kind() == slog.KindString {
+		return v.String()
+	}
+	if v.Kind() == slog.KindAny {
+		return fmt.Sprint(v.Any())
+	}
+	return v.String()
+}
+
+func formatBlockAttr(a slog.Attr) (string, bool) {
+	value, ok := blockValue(a)
+	if !ok {
+		return "", false
+	}
+	var sb strings.Builder
+	sb.WriteString("  ")
+	sb.WriteString(a.Key)
+	sb.WriteString(":\n")
+	for _, line := range strings.Split(value, "\n") {
+		sb.WriteString("    ")
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+	return sb.String(), true
+}
+
+func blockValue(a slog.Attr) (string, bool) {
+	if a.Value.Kind() == slog.KindString {
+		raw := a.Value.String()
+		if pretty, ok := prettyJSONString(raw); ok {
+			return pretty, true
+		}
+		if wantsBlock(a.Key, raw) {
+			return raw, true
+		}
+		return "", false
+	}
+
+	if a.Value.Kind() == slog.KindAny {
+		raw := fmt.Sprint(a.Value.Any())
+		if pretty, ok := prettyJSONValue(a.Value.Any()); ok {
+			return pretty, true
+		}
+		if wantsBlock(a.Key, raw) {
+			return raw, true
+		}
+	}
+
+	return "", false
+}
+
+func wantsBlock(key, value string) bool {
+	switch key {
+	case "body", "headers", "request", "response", "payload":
+		return value != ""
+	}
+	return len(value) > 160 || strings.Contains(value, "\n")
+}
+
+func prettyJSONString(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || !(strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")) {
+		return "", false
+	}
+	var out bytes.Buffer
+	if err := json.Indent(&out, []byte(s), "", "  "); err != nil {
+		return "", false
+	}
+	return out.String(), true
+}
+
+func prettyJSONValue(v any) (string, bool) {
+	switch v.(type) {
+	case nil, string, error:
+		return "", false
+	}
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
 }
 
 // quoteIfNeeded wraps a value in double-quotes when it would otherwise be
