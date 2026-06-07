@@ -51,7 +51,17 @@ func main() {
 
 	sm := sessions.NewManager()
 	thinker := claude.NewThinker(cfg.Claude)
-	mgr := agents.NewManager(slackApp, slackApp, thinker, logger)
+
+	store, err := agents.NewStore(cfg.StateDir)
+	if err != nil {
+		logger.Error("init agent state store", "err", err)
+		os.Exit(1)
+	}
+	mgr := agents.NewManager(slackApp, slackApp, thinker, store, logger)
+	if err := mgr.Restore(context.Background()); err != nil {
+		logger.Error("restore agents from store", "err", err)
+		os.Exit(1)
+	}
 	commands := server.NewCommandsHandler(slackApp, mgr, logger)
 
 	cortex := server.NewCortex(cfg, sm, slackApp)

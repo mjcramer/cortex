@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 var (
@@ -23,6 +24,7 @@ type Manager struct {
 	provisioner ChannelProvisioner
 	replier     Replier
 	thinker     Thinker
+	store       Store
 	logger      *slog.Logger
 
 	mu     sync.RWMutex
@@ -30,15 +32,59 @@ type Manager struct {
 	byChan map[string]*Agent
 }
 
-func NewManager(provisioner ChannelProvisioner, replier Replier, thinker Thinker, logger *slog.Logger) *Manager {
+func NewManager(provisioner ChannelProvisioner, replier Replier, thinker Thinker, store Store, logger *slog.Logger) *Manager {
+	if store == nil {
+		store = NoopStore{}
+	}
 	return &Manager{
 		provisioner: provisioner,
 		replier:     replier,
 		thinker:     thinker,
+		store:       store,
 		logger:      logger,
 		byName:      make(map[string]*Agent),
 		byChan:      make(map[string]*Agent),
 	}
+}
+
+// persist mirrors an agent's state to the Store. It runs on its own short
+// context (agents call it from their goroutine) and logs rather than fails on
+// error — a persistence hiccup must not break the live conversation.
+func (m *Manager) persist(st AgentState) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.store.Save(ctx, st); err != nil {
+		m.logger.Error("persist agent state failed", "name", st.Name, "err", err)
+	}
+}
+
+// Restore reloads persisted agents and respawns their goroutines. It does NOT
+// re-provision Slack channels — it trusts the stored channel ID — and skips any
+// agent already present. Call once at startup.
+func (m *Manager) Restore(ctx context.Context) error {
+	states, err := m.store.LoadAll(ctx)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	restored := 0
+	for _, st := range states {
+		if st.Name == "" || st.ChannelID == "" {
+			m.logger.Warn("skipping malformed persisted agent", "name", st.Name)
+			continue
+		}
+		if _, ok := m.byName[st.Name]; ok {
+			continue
+		}
+		agent := newAgent(context.Background(), st.Name, st.ChannelID, st.History, m.replier, m.thinker, m.persist, m.logger)
+		agent.start()
+		m.byName[st.Name] = agent
+		m.byChan[st.ChannelID] = agent
+		restored++
+	}
+	m.logger.Info("restored agents", "count", restored)
+	return nil
 }
 
 // Create provisions the Slack channel for the agent and spawns its goroutine.
@@ -59,15 +105,20 @@ func (m *Manager) Create(ctx context.Context, name string) (string, error) {
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if existing, ok := m.byName[name]; ok {
+		m.mu.Unlock()
 		return existing.ChannelID, ErrAgentExists
 	}
 
-	agent := newAgent(context.Background(), name, channelID, m.replier, m.thinker, m.logger)
+	agent := newAgent(context.Background(), name, channelID, nil, m.replier, m.thinker, m.persist, m.logger)
 	agent.start()
 	m.byName[name] = agent
 	m.byChan[channelID] = agent
+	m.mu.Unlock()
+
+	// Persist the initial state so the agent is known across a restart even
+	// before its first turn.
+	m.persist(AgentState{Name: name, ChannelID: channelID})
 	return channelID, nil
 }
 
@@ -84,6 +135,10 @@ func (m *Manager) Destroy(ctx context.Context, name string) error {
 	m.mu.Unlock()
 
 	agent.stop()
+
+	if err := m.store.Delete(ctx, name); err != nil {
+		m.logger.Error("delete agent state failed", "name", name, "err", err)
+	}
 
 	if err := m.provisioner.ArchiveChannel(ctx, agent.ChannelID); err != nil {
 		return err

@@ -17,8 +17,11 @@ type Config struct {
 	BindAddr           string
 	DefaultWaitTimeout time.Duration
 	LogLevel           string
-	Slack              *SlackConfig
-	Claude             *ClaudeConfig
+	// StateDir is where agent state is persisted. Empty disables persistence
+	// (in-memory only). Set via CORTEX_STATE_DIR.
+	StateDir string
+	Slack    *SlackConfig
+	Claude   *ClaudeConfig
 	// Register is non-nil only when CORTEX_SLACK_AUTOREGISTER is enabled.
 	Register *slackadmin.RegisterConfig
 }
@@ -63,6 +66,7 @@ func FromEnv() (*Config, error) {
 		BindAddr:           bindAddr,
 		DefaultWaitTimeout: time.Duration(timeoutSecs) * time.Second,
 		LogLevel:           os.Getenv("CORTEX_LOG_LEVEL"),
+		StateDir:           os.Getenv("CORTEX_STATE_DIR"),
 		Slack:              slack,
 		Claude:             claude,
 		Register:           register,

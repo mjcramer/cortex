@@ -40,6 +40,7 @@ type Agent struct {
 	inbox   chan IncomingMessage
 	replier Replier
 	thinker Thinker
+	persist func(AgentState) // called after each turn to mirror history to the Store; may be nil
 	logger  *slog.Logger
 
 	mu      sync.Mutex
@@ -50,7 +51,7 @@ type Agent struct {
 	done   chan struct{}
 }
 
-func newAgent(parent context.Context, name, channelID string, replier Replier, thinker Thinker, logger *slog.Logger) *Agent {
+func newAgent(parent context.Context, name, channelID string, history []Turn, replier Replier, thinker Thinker, persist func(AgentState), logger *slog.Logger) *Agent {
 	ctx, cancel := context.WithCancel(parent)
 	return &Agent{
 		Name:      name,
@@ -58,7 +59,9 @@ func newAgent(parent context.Context, name, channelID string, replier Replier, t
 		inbox:     make(chan IncomingMessage, 32),
 		replier:   replier,
 		thinker:   thinker,
+		persist:   persist,
 		logger:    logger.With("agent", name, "channel", channelID),
+		history:   append([]Turn(nil), history...),
 		ctx:       ctx,
 		cancel:    cancel,
 		done:      make(chan struct{}),
@@ -119,7 +122,12 @@ func (a *Agent) handle(msg IncomingMessage) {
 	if len(a.history) > maxTurns {
 		a.history = append([]Turn(nil), a.history[len(a.history)-maxTurns:]...)
 	}
+	historySnapshot = append([]Turn(nil), a.history...)
 	a.mu.Unlock()
+
+	if a.persist != nil {
+		a.persist(AgentState{Name: a.Name, ChannelID: a.ChannelID, History: historySnapshot})
+	}
 
 	if err := a.replier.PostToChannel(respCtx, a.ChannelID, reply); err != nil {
 		a.logger.Error("post reply failed", "err", err)
