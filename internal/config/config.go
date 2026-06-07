@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// LevelTrace is a custom slog level below slog.LevelDebug. slog has no
+// built-in trace level, so we define one to honor CORTEX_LOG_LEVEL=trace.
+const LevelTrace slog.Level = slog.LevelDebug - 4
+
 type Config struct {
 	BindAddr           string
 	DefaultWaitTimeout time.Duration
@@ -72,7 +76,19 @@ func FromEnv() (*Config, error) {
 
 // NewLogger builds a slog.Logger that honors the configured format and level.
 func (c *Config) NewLogger() *slog.Logger {
-	opts := &slog.HandlerOptions{Level: c.LogLevel}
+	opts := &slog.HandlerOptions{
+		Level: c.LogLevel,
+		// slog labels custom levels relative to the nearest built-in
+		// (LevelTrace would print as "DEBUG-4"); relabel it to "TRACE".
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.LevelKey {
+				if lvl, ok := a.Value.Any().(slog.Level); ok && lvl == LevelTrace {
+					a.Value = slog.StringValue("TRACE")
+				}
+			}
+			return a
+		},
+	}
 	var h slog.Handler
 	if c.LogFormat == "text" {
 		h = slog.NewTextHandler(os.Stderr, opts)
@@ -86,6 +102,8 @@ func parseLogLevel(v string) (slog.Level, error) {
 	switch strings.ToLower(v) {
 	case "", "info":
 		return slog.LevelInfo, nil
+	case "trace":
+		return LevelTrace, nil
 	case "debug":
 		return slog.LevelDebug, nil
 	case "warn", "warning":
@@ -93,7 +111,7 @@ func parseLogLevel(v string) (slog.Level, error) {
 	case "error":
 		return slog.LevelError, nil
 	default:
-		return 0, fmt.Errorf("invalid CORTEX_LOG_LEVEL %q: want debug, info, warn, or error", v)
+		return 0, fmt.Errorf("invalid CORTEX_LOG_LEVEL %q: want trace, debug, info, warn, or error", v)
 	}
 }
 
