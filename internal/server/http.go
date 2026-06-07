@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	pb "github.com/mjcramer/cortex/internal/cortexpb"
@@ -15,10 +16,14 @@ import (
 type HTTPHandler struct {
 	Sessions *sessions.Manager
 	Slack    *slack.App // may be nil if slack is not configured
+	Log      *slog.Logger
 }
 
-func NewHTTPHandler(sm *sessions.Manager, app *slack.App) *HTTPHandler {
-	return &HTTPHandler{Sessions: sm, Slack: app}
+func NewHTTPHandler(sm *sessions.Manager, app *slack.App, logger *slog.Logger) *HTTPHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &HTTPHandler{Sessions: sm, Slack: app, Log: logger.With("component", "http")}
 }
 
 func (h *HTTPHandler) Routes() *http.ServeMux {
@@ -79,6 +84,7 @@ func (h *HTTPHandler) handleReply(event slack.MessageEvent) {
 	}
 	sessionID, ok := h.Sessions.FindBySlackThread(reply.Thread)
 	if !ok {
+		// A reply in a thread we don't track (e.g. unrelated channel chatter).
 		return
 	}
 	if err := h.Sessions.Submit(&pb.HumanReply{
@@ -87,9 +93,17 @@ func (h *HTTPHandler) handleReply(event slack.MessageEvent) {
 		Responder: reply.UserID,
 		Source:    fmt.Sprintf("slack:%s:%s", reply.Thread.ChannelID, reply.Thread.ThreadTS),
 	}); err != nil {
-		// Already-responded / not-found are benign here; we deliberately swallow.
-		if !errors.Is(err, sessions.ErrAlreadyResponded) && !errors.Is(err, sessions.ErrNotFound) {
-			// no logger wired yet; drop silently for MVP
+		// Already-responded / not-found are benign races (duplicate Slack
+		// deliveries, a session that timed out and was removed); log at debug.
+		if errors.Is(err, sessions.ErrAlreadyResponded) || errors.Is(err, sessions.ErrNotFound) {
+			h.Log.Debug("ignoring benign reply submission error",
+				"session_id", sessionID, "error", err)
+			return
 		}
+		h.Log.Error("failed to record human reply",
+			"session_id", sessionID, "channel_id", reply.Thread.ChannelID,
+			"thread_ts", reply.Thread.ThreadTS, "error", err)
+		return
 	}
+	h.Log.Info("recorded human reply", "session_id", sessionID, "responder", reply.UserID)
 }

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,8 +25,14 @@ import (
 func main() {
 	cfg, err := config.FromEnv()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		// Config (and thus the logger) isn't available yet; fall back to the
+		// default slog logger for this one fatal path.
+		slog.Error("failed to load configuration", "error", err)
+		os.Exit(1)
 	}
+
+	logger := cfg.NewLogger()
+	slog.SetDefault(logger)
 
 	sm := sessions.NewManager()
 
@@ -35,12 +41,12 @@ func main() {
 		notifier slack.Notifier = slack.DisabledNotifier{}
 	)
 	if cfg.Slack != nil {
-		slackApp = slack.NewApp(cfg.Slack)
+		slackApp = slack.NewApp(cfg.Slack, logger)
 		notifier = slackApp
 	}
 
-	cortex := server.NewCortex(cfg, sm, notifier)
-	httpHandler := server.NewHTTPHandler(sm, slackApp).Routes()
+	cortex := server.NewCortex(cfg, sm, notifier, logger)
+	httpHandler := server.NewHTTPHandler(sm, slackApp, logger).Routes()
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterCortexAgentServiceServer(grpcServer, cortex)
@@ -70,12 +76,13 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("cortex listening on %s (gRPC + HTTP via h2c)", cfg.BindAddr)
+	logger.Info("cortex listening", "addr", cfg.BindAddr, "transport", "grpc+http (h2c)")
 	if cfg.Slack != nil {
-		log.Printf("slack events enabled; agent channels use prefix %q at /slack/events", cfg.Slack.ChannelPrefix)
+		logger.Info("slack events enabled", "channel_prefix", cfg.Slack.ChannelPrefix, "events_path", "/slack/events")
 	}
 
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("server: %v", err)
+		logger.Error("server stopped unexpectedly", "error", err)
+		os.Exit(1)
 	}
 }
