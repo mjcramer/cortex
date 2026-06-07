@@ -1,4 +1,4 @@
-# cortex
+# ![Cortex](images/cortex-logo.png)
 
 ## Project Overview
 

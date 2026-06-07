@@ -26,9 +26,10 @@ The order matters: Slack verifies an `event_subscriptions.request_url` the momen
 The app manifest lives at [`manifest.yaml`](manifest.yaml). Its URLs are templated with `${SLACK_CALLBACK_URL}`, so render a concrete copy first (the Slack UI will not accept an unresolved placeholder):
 
 ```bash
-SLACK_CALLBACK_URL=https://your-domain.ngrok-free.dev \
-  envsubst < integrations/slack/manifest.yaml
-# or, without envsubst:
+SLACK_CALLBACK_URL=https://your-domain.ngrok-free.dev envsubst < integrations/slack/manifest.yaml
+````  
+or, without envsubst:
+```bash
 sed 's|${SLACK_CALLBACK_URL}|https://your-domain.ngrok-free.dev|g' \
   integrations/slack/manifest.yaml
 ```
