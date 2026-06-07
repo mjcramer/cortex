@@ -62,6 +62,7 @@ func (m *Manager) persist(st AgentState) {
 // re-provision Slack channels — it trusts the stored channel ID — and skips any
 // agent already present. Call once at startup.
 func (m *Manager) Restore(ctx context.Context) error {
+	m.logger.Debug("loading agents from store")
 	states, err := m.store.LoadAll(ctx)
 	if err != nil {
 		return err
@@ -75,6 +76,7 @@ func (m *Manager) Restore(ctx context.Context) error {
 			continue
 		}
 		if _, ok := m.byName[st.Name]; ok {
+			m.logger.Debug("agent already present; skipping restore", "name", st.Name)
 			continue
 		}
 		agent := newAgent(context.Background(), st.Name, st.ChannelID, st.History, m.replier, m.thinker, m.persist, m.logger)
@@ -82,9 +84,11 @@ func (m *Manager) Restore(ctx context.Context) error {
 		m.byName[st.Name] = agent
 		m.byChan[st.ChannelID] = agent
 		restored++
+		m.logger.Info("restored agent from store",
+			"name", st.Name, "channel", st.ChannelID, "history_turns", len(st.History))
 	}
 	if restored > 0 {
-		m.logger.Info("restored agents", "count", restored)
+		m.logger.Info("agent restore complete", "restored", restored)
 	}
 	return nil
 }
