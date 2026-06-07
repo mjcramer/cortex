@@ -1,0 +1,39 @@
+_metadata:
+  major_version: 2
+  minor_version: 1
+display_information:
+  name: Cortex
+  description: Routes agent requests to humans over Slack.
+  background_color: "#1f2937"
+features:
+  bot_user:
+    display_name: Cortex
+    always_online: true
+  slash_commands:
+    - command: /cortex
+      url: ${SLACK_CALLBACK_URL}/slack/commands
+      description: Manage Cortex AI agents
+      usage_hint: agent create <name> | agent destroy <name> | agent list
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - chat:write.customize
+      - channels:manage
+      - channels:read
+      - channels:join
+      - channels:history
+      - commands
+settings:
+  event_subscriptions:
+    request_url: ${SLACK_CALLBACK_URL}/slack/events
+    bot_events:
+      - message.channels
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
+# Placeholders (${SLACK_CALLBACK_URL}) are substituted by server auto-registration
+# before posting to apps.manifest.update. The Slack UI's manifest editor will NOT
+# accept this file directly because the URLs are unresolved; render it first (see
+# integrations/slack/slack.md).

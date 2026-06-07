@@ -8,6 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/slack-go/slack/slackevents"
+
+	"github.com/mjcramer/cortex/internal/agents"
 	pb "github.com/mjcramer/cortex/internal/cortexpb"
 	"github.com/mjcramer/cortex/internal/sessions"
 	"github.com/mjcramer/cortex/internal/slack"
@@ -16,14 +19,13 @@ import (
 type HTTPHandler struct {
 	Sessions *sessions.Manager
 	Slack    *slack.App // may be nil if slack is not configured
-	Log      *slog.Logger
+	Agents   *agents.Manager
+	Commands *CommandsHandler
+	Logger   *slog.Logger
 }
 
-func NewHTTPHandler(sm *sessions.Manager, app *slack.App, logger *slog.Logger) *HTTPHandler {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &HTTPHandler{Sessions: sm, Slack: app, Log: logger.With("component", "http")}
+func NewHTTPHandler(sm *sessions.Manager, app *slack.App, mgr *agents.Manager, cmds *CommandsHandler, logger *slog.Logger) *HTTPHandler {
+	return &HTTPHandler{Sessions: sm, Slack: app, Agents: mgr, Commands: cmds, Logger: logger}
 }
 
 func (h *HTTPHandler) Routes() *http.ServeMux {
@@ -32,15 +34,11 @@ func (h *HTTPHandler) Routes() *http.ServeMux {
 		_, _ = io.WriteString(w, "ok")
 	})
 	mux.HandleFunc("/slack/events", h.slackEvents)
+	mux.Handle("/slack/commands", h.Commands)
 	return mux
 }
 
 func (h *HTTPHandler) slackEvents(w http.ResponseWriter, r *http.Request) {
-	if h.Slack == nil {
-		http.Error(w, "Slack integration is not configured", http.StatusServiceUnavailable)
-		return
-	}
-
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
@@ -52,39 +50,68 @@ func (h *HTTPHandler) slackEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var envelope slack.Envelope
-	if err := json.Unmarshal(body, &envelope); err != nil {
+	event, err := slack.ParseEvent(body)
+	if err != nil {
 		http.Error(w, fmt.Sprintf("invalid Slack event payload: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	switch envelope.Type {
-	case "url_verification":
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"challenge": envelope.Challenge})
-	case "event_callback":
-		var event slack.MessageEvent
-		if len(envelope.Event) > 0 {
-			if err := json.Unmarshal(envelope.Event, &event); err != nil {
-				http.Error(w, fmt.Sprintf("invalid Slack message event: %v", err), http.StatusBadRequest)
-				return
-			}
+	switch event.Type {
+	case slackevents.URLVerification:
+		var challenge struct {
+			Challenge string `json:"challenge"`
 		}
-		h.handleReply(event)
+		if err := json.Unmarshal(body, &challenge); err != nil {
+			http.Error(w, fmt.Sprintf("invalid url_verification payload: %v", err), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, challenge.Challenge)
+	case slackevents.CallbackEvent:
+		if inner, ok := event.InnerEvent.Data.(*slackevents.MessageEvent); ok {
+			h.handleMessage(inner)
+		}
 		w.WriteHeader(http.StatusOK)
 	default:
 		w.WriteHeader(http.StatusOK)
 	}
 }
 
-func (h *HTTPHandler) handleReply(event slack.MessageEvent) {
-	reply := event.HumanThreadReply()
+// handleMessage routes a Slack message event to either an agent (top-level
+// messages in an agent's channel become turns in that agent's conversation)
+// or, as a fallback, to a waiting gRPC session keyed by (channel_id, thread_ts).
+func (h *HTTPHandler) handleMessage(event *slackevents.MessageEvent) {
+	if event == nil || event.Type != "message" {
+		return
+	}
+	if event.SubType != "" || event.BotID != "" {
+		return
+	}
+	if event.Channel == "" || event.User == "" {
+		return
+	}
+	text := trimSpace(event.Text)
+	if text == "" {
+		return
+	}
+
+	// Top-level channel message → agent (if one owns this channel).
+	if event.ThreadTimeStamp == "" && h.Agents != nil {
+		if h.Agents.RouteMessage(event.Channel, agents.IncomingMessage{UserID: event.User, Text: text}) {
+			return
+		}
+	}
+
+	// Otherwise treat it as a threaded reply to a pending session.
+	if event.ThreadTimeStamp == "" {
+		return
+	}
+	reply := slack.HumanThreadReply(event)
 	if reply == nil {
 		return
 	}
 	sessionID, ok := h.Sessions.FindBySlackThread(reply.Thread)
 	if !ok {
-		// A reply in a thread we don't track (e.g. unrelated channel chatter).
 		return
 	}
 	if err := h.Sessions.Submit(&pb.HumanReply{
@@ -93,17 +120,20 @@ func (h *HTTPHandler) handleReply(event slack.MessageEvent) {
 		Responder: reply.UserID,
 		Source:    fmt.Sprintf("slack:%s:%s", reply.Thread.ChannelID, reply.Thread.ThreadTS),
 	}); err != nil {
-		// Already-responded / not-found are benign races (duplicate Slack
-		// deliveries, a session that timed out and was removed); log at debug.
-		if errors.Is(err, sessions.ErrAlreadyResponded) || errors.Is(err, sessions.ErrNotFound) {
-			h.Log.Debug("ignoring benign reply submission error",
-				"session_id", sessionID, "error", err)
-			return
+		if !errors.Is(err, sessions.ErrAlreadyResponded) && !errors.Is(err, sessions.ErrNotFound) {
+			// no logger here yet; drop silently
 		}
-		h.Log.Error("failed to record human reply",
-			"session_id", sessionID, "channel_id", reply.Thread.ChannelID,
-			"thread_ts", reply.Thread.ThreadTS, "error", err)
-		return
 	}
-	h.Log.Info("recorded human reply", "session_id", sessionID, "responder", reply.UserID)
+}
+
+func trimSpace(s string) string {
+	// Avoid importing strings just for one call in this file's hot path.
+	start, end := 0, len(s)
+	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
+		start++
+	}
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
+		end--
+	}
+	return s[start:end]
 }

@@ -11,8 +11,7 @@ BUILD_FLAGS ?=
 TEST_FLAGS ?=
 RUN_ARGS ?=
 
-TUNNEL_PORT ?= 50051
-NGROK_URL ?= $(SLACK_CALLBACK_URL)
+TUNNEL_PORT ?= 23001
 
 PROTOC ?= protoc
 PROTO_DIR ?= proto
@@ -67,10 +66,9 @@ proto: ## Regenerate protobuf bindings from $(PROTO_DIR)
 clean: ## Remove build artifacts
 	rm -rf bin
 
-tunnel: ## Open a public ngrok tunnel to the local server on TUNNEL_PORT (pinned to NGROK_URL / SLACK_CALLBACK_URL)
+tunnel: ## Open a public ngrok tunnel to the local server on TUNNEL_PORT
 	@command -v ngrok >/dev/null 2>&1 || { echo "ngrok not found; install via 'brew install ngrok'"; exit 1; }
-	@[ -n "$(NGROK_URL)" ] || { echo "NGROK_URL (or SLACK_CALLBACK_URL) is not set; export your reserved ngrok domain first"; exit 1; }
-	ngrok http --url=$(NGROK_URL) $(TUNNEL_PORT)
+	ngrok http --url=scarf-flavorful-contented.ngrok-free.dev $(TUNNEL_PORT)
 
 ci: fmt-check vet test ## Run the standard local CI checks
 

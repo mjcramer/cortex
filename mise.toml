@@ -1,6 +1,0 @@
-[tools]
-go = "latest"
-protoc = "latest"
-terraform = "latest"
-"go:google.golang.org/protobuf/cmd/protoc-gen-go" = "latest"
-"go:google.golang.org/grpc/cmd/protoc-gen-go-grpc" = "latest"

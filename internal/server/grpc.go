@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -22,14 +21,10 @@ type Cortex struct {
 	Cfg      *config.Config
 	Sessions *sessions.Manager
 	Notifier slack.Notifier
-	Log      *slog.Logger
 }
 
-func NewCortex(cfg *config.Config, sm *sessions.Manager, n slack.Notifier, logger *slog.Logger) *Cortex {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Cortex{Cfg: cfg, Sessions: sm, Notifier: n, Log: logger.With("component", "grpc")}
+func NewCortex(cfg *config.Config, sm *sessions.Manager, n slack.Notifier) *Cortex {
+	return &Cortex{Cfg: cfg, Sessions: sm, Notifier: n}
 }
 
 func (c *Cortex) SendEvent(ctx context.Context, signal *pb.AgentSignal) (*pb.Ack, error) {
@@ -44,25 +39,17 @@ func (c *Cortex) SendEvent(ctx context.Context, signal *pb.AgentSignal) (*pb.Ack
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	log := c.Log.With("session_id", signal.SessionId, "agent", signal.Agent)
-	log.Info("agent event received", "repo", signal.Repo)
-
 	thread, err := c.Notifier.Notify(ctx, signal)
 	if err != nil {
 		c.Sessions.Remove(signal.SessionId)
-		log.Error("failed to notify human responder", "error", err)
 		return nil, status.Errorf(codes.Unavailable, "failed to notify human responder: %v", err)
 	}
 
 	if err := c.Sessions.AttachSlackThread(signal.SessionId, thread); err != nil {
 		c.Sessions.Remove(signal.SessionId)
-		log.Error("failed to attach slack thread to session",
-			"error", err, "channel_id", thread.ChannelID, "thread_ts", thread.ThreadTS)
 		return nil, status.Errorf(codes.Internal, "failed to attach slack thread %s:%s to session: %v",
 			thread.ChannelID, thread.ThreadTS, err)
 	}
-
-	log.Info("agent event posted to slack", "channel_id", thread.ChannelID, "thread_ts", thread.ThreadTS)
 
 	return &pb.Ack{
 		Accepted: true,

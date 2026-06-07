@@ -9,6 +9,7 @@ coverage.txt
 # Local environment
 .env
 .env.local
+.mise.toml
 .mise.*
 
 # Editor / IDE
@@ -18,5 +19,9 @@ coverage.txt
 # OS
 .DS_Store
 
-# Local Claude Code state
-.claude/
+# Local Claude Code state (ignore everything except the shared project settings)
+.claude/*
+!.claude/settings.json
+
+# Cortex state
+.state
