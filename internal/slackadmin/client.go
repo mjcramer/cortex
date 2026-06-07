@@ -68,13 +68,42 @@ type updateResponse struct {
 	Error              string `json:"error"`
 	AppID              string `json:"app_id"`
 	PermissionsUpdated bool   `json:"permissions_updated"`
+	// Errors carries the per-field detail Slack returns for invalid_manifest,
+	// e.g. {pointer: "/oauth_config/scopes/bot", message: "..."}. Without this
+	// the top-level "invalid_manifest" code alone is not actionable.
+	Errors []struct {
+		Message string `json:"message"`
+		Pointer string `json:"pointer"`
+	} `json:"errors"`
+}
+
+func (r updateResponse) errorString() string {
+	if len(r.Errors) == 0 {
+		return r.Error
+	}
+	parts := make([]string, 0, len(r.Errors))
+	for _, e := range r.Errors {
+		if e.Pointer != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", e.Message, e.Pointer))
+		} else {
+			parts = append(parts, e.Message)
+		}
+	}
+	return fmt.Sprintf("%s: %s", r.Error, strings.Join(parts, "; "))
 }
 
 // UpdateManifest applies a manifest to the app, authenticating with the bearer
 // access token. It returns whether scopes changed — when true, Slack requires a
 // reinstall before the new permissions take effect.
 func (c *Client) UpdateManifest(ctx context.Context, accessToken, appID string, manifest map[string]any) (permissionsUpdated bool, err error) {
-	payload, err := json.Marshal(map[string]any{"app_id": appID, "manifest": manifest})
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		return false, fmt.Errorf("encode manifest: %w", err)
+	}
+	payload, err := json.Marshal(map[string]string{
+		"app_id":   appID,
+		"manifest": string(manifestJSON),
+	})
 	if err != nil {
 		return false, err
 	}
@@ -97,7 +126,7 @@ func (c *Client) UpdateManifest(ctx context.Context, accessToken, appID string, 
 		return false, fmt.Errorf("decode update response: %w", err)
 	}
 	if !r.OK {
-		return false, fmt.Errorf("apps.manifest.update: %s", r.Error)
+		return false, fmt.Errorf("apps.manifest.update: %s", r.errorString())
 	}
 	return r.PermissionsUpdated, nil
 }

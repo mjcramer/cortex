@@ -50,6 +50,7 @@ What the scopes are for:
 | `channels:manage`      | Create channels via `conversations.create` and archive them via `conversations.archive` on `/cortex agent destroy`. |
 | `channels:read`        | Call `conversations.list` to find a pre-existing channel when `name_taken` fires.   |
 | `channels:join`        | Call `conversations.join` so the bot can post into channels it didn't create.       |
+| `channels:history`     | Required to subscribe to the `message.channels` event and read channel message text. Without it Slack rejects the manifest as `invalid_manifest`. |
 | `commands`             | Receive `/cortex` slash command invocations.                                        |
 
 ## 2. Install the app into the workspace
@@ -100,7 +101,25 @@ The server can push `manifest.yaml` to Slack on startup so the request URLs and 
 
 Slack's `apps.manifest.update` requires an app **configuration** token — not the bot token — which expires roughly every 12 hours. Cortex manages this for you: you seed a refresh token **once**, and the server rotates it via `tooling.tokens.rotate` and persists the new pair to a `0600` state file. After the first run the state file is canonical and the seed is never read again. (See [Why seed once?](#why-seed-the-refresh-token-once) for the chain-of-trust reasoning.)
 
-**Generate the config refresh token** at <https://api.slack.com/apps> → **Manage app configuration tokens** (bottom of the Your Apps list) — this issues an access token + refresh token pair scoped to your account. Background: <https://api.slack.com/authentication/config-tokens>. The **refresh** token is your `SLACK_CONFIG_REFRESH_TOKEN`.
+**The config refresh token is not the signing secret or the bot token** — it's a separate credential, used only to update the app manifest. Cortex's four Slack credentials:
+
+| Credential | Where to get it | Purpose | Env var |
+|---|---|---|---|
+| Signing Secret | **Basic Information → App Credentials** | server verifies inbound Slack requests (HMAC); never expires | `SLACK_SIGNING_SECRET` |
+| Bot User OAuth Token (`xoxb-…`) | **Install App / OAuth & Permissions** | server calls Slack APIs | `SLACK_BOT_TOKEN` |
+| Config Access Token (`xoxe.xoxp-…`) | App Configuration Tokens generator | short-lived (12h); updates the manifest | held in the state file |
+| Config **Refresh** Token (`xoxe-…`) | same generator | exchanged for new access tokens | `SLACK_CONFIG_REFRESH_TOKEN` |
+
+**To generate the config refresh token:**
+
+1. Go to <https://api.slack.com/apps>.
+2. Scroll to the **bottom of that page** to the **"Your App Configuration Tokens"** section.
+3. Click **Generate Token**, pick your workspace, and confirm.
+4. Slack shows an **Access Token** and a **Refresh Token**. Copy the **Refresh Token** (`xoxe-…`) — that is `SLACK_CONFIG_REFRESH_TOKEN`.
+
+These tokens are scoped to your user account across all your apps (hence the apps-list page, not a single app's settings). Background: <https://api.slack.com/authentication/config-tokens>. You only need this token for auto-registration; with manual setup ([Option B](#option-b-manual-registration)) you never touch it.
+
+> **Not to be confused with an app-level token.** Slack also offers *app-level tokens* (`xapp-…`, generated under Basic Information → App-Level Tokens) for **Socket Mode**. Cortex does not use Socket Mode (`socket_mode_enabled: false` in the manifest) — it receives events over the HTTP request URL — so you never generate an `xapp-…` token for this project. The config refresh token (`xoxe-…`) is account-scoped and unrelated.
 
 Slack-specific environment variables for this path:
 
@@ -125,7 +144,7 @@ make run
 # Subsequent runs: drop SLACK_CONFIG_REFRESH_TOKEN; the state file is canonical
 ```
 
-On boot you'll see `slack manifest registered ... permissions_updated=...`. If scopes changed, you'll also get a warning to reinstall the app (Slack requires human consent for new permissions). `make slack-sync` remains as a manual out-of-band alternative — see [`AUTOMATION.md`](AUTOMATION.md).
+On boot you'll see `slack manifest registered ... permissions_updated=...`. If scopes changed, you'll also get a warning to reinstall the app (Slack requires human consent for new permissions).
 
 #### Why seed the refresh token once?
 

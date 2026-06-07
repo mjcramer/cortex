@@ -5,15 +5,18 @@
 > startup when `CORTEX_SLACK_AUTOREGISTER=true`. Bootstrap once with
 > `SLACK_CONFIG_REFRESH_TOKEN`, then the server rotates and persists the
 > app-config token to `$XDG_CONFIG_HOME/cortex/slack-tokens.json` automatically.
-> See the env vars in `CLAUDE.md`. The `validate`/`diff`/`--dry-run` modes and
-> the standalone `cmd/slack-sync` CLI sketched below are still future work.
+> See the env vars in `CLAUDE.md` and the setup guide in `slack.md`.
+>
+> There is **no** `make slack-sync` target — the earlier shallow
+> `sed | yq | jq | curl` pipeline was removed once the server handled
+> registration itself (it carried the same obfuscation we set out to avoid and a
+> second code path that could drift). The `validate`/`diff`/`--dry-run` modes and
+> the standalone `cmd/slack-sync` CLI sketched below remain future work.
 
-`make slack-sync` remains as the shallow manual fallback: a bash pipeline
-(`sed | yq | jq | curl`) that calls `apps.manifest.update` with the access token
-you paste into `SLACK_CONFIG_ACCESS_TOKEN`. Slack's tooling tokens expire every
-12 hours, so with that path you re-paste manually.
-
-This doc captures the remaining full-automation design.
+This doc captures that remaining design: an out-of-band tool whose distinct value
+is **CI / manifest-as-code** — pushing the manifest from a pipeline (without
+booting the server) so the deployed app config cannot drift from git. The server
+auto-registration covers the everyday workflow; this would cover enforcement.
 
 ## Goals
 

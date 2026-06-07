@@ -117,8 +117,6 @@ failure is logged and the server keeps serving.
 - `CORTEX_SLACK_TOKENS_PATH` state file for the rotating config token (default `$XDG_CONFIG_HOME/cortex/slack-tokens.json`, mode `0600`)
 - `CORTEX_SLACK_MANIFEST_PATH` manifest to push (default `integrations/slack/manifest.yaml`)
 
-The `make slack-sync` target remains as a manual, out-of-band alternative.
-
 ## Infrastructure
 
 Terraform configuration is located in the `terraform/` directory with GCP-focused infrastructure:

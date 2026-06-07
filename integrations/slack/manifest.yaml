@@ -23,6 +23,7 @@ oauth_config:
       - channels:manage
       - channels:read
       - channels:join
+      - channels:history
       - commands
 settings:
   event_subscriptions:
@@ -32,7 +33,7 @@ settings:
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
-# Placeholders (${SLACK_CALLBACK_URL}) are substituted by `make slack-sync`
-# before posting to apps.manifest.update. The Slack UI's manifest editor will
-# NOT accept this file directly because the URLs are unresolved; use the sync
-# target instead.
+# Placeholders (${SLACK_CALLBACK_URL}) are substituted by server auto-registration
+# before posting to apps.manifest.update. The Slack UI's manifest editor will NOT
+# accept this file directly because the URLs are unresolved; render it first (see
+# integrations/slack/slack.md).

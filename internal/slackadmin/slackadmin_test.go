@@ -1,6 +1,10 @@
 package slackadmin
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -91,5 +95,45 @@ func TestNeedsRotation(t *testing.T) {
 				t.Fatalf("NeedsRotation() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUpdateManifestSendsManifestAsJSONString(t *testing.T) {
+	var got struct {
+		AppID    string `json:"app_id"`
+		Manifest any    `json:"manifest"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/apps.manifest.update" {
+			t.Fatalf("path = %q, want /apps.manifest.update", r.URL.Path)
+		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer xoxe-access" {
+			t.Fatalf("Authorization = %q", auth)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"permissions_updated":false}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	_, err := client.UpdateManifest(context.Background(), "xoxe-access", "A123", map[string]any{
+		"display_information": map[string]any{"name": "Cortex"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateManifest: %v", err)
+	}
+	if got.AppID != "A123" {
+		t.Fatalf("app_id = %q, want A123", got.AppID)
+	}
+	manifestString, ok := got.Manifest.(string)
+	if !ok {
+		t.Fatalf("manifest type = %T, want string", got.Manifest)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal([]byte(manifestString), &manifest); err != nil {
+		t.Fatalf("manifest is not JSON: %v", err)
 	}
 }
