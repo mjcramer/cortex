@@ -83,7 +83,9 @@ func (m *Manager) Restore(ctx context.Context) error {
 		m.byChan[st.ChannelID] = agent
 		restored++
 	}
-	m.logger.Info("restored agents", "count", restored)
+	if restored > 0 {
+		m.logger.Info("restored agents", "count", restored)
+	}
 	return nil
 }
 

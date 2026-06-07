@@ -57,6 +57,11 @@ func main() {
 		logger.Error("init agent state store", "err", err)
 		os.Exit(1)
 	}
+	if cfg.StateDir == "" {
+		logger.Info("agent persistence disabled", "backend", "noop", "hint", "set CORTEX_STATE_DIR to enable")
+	} else {
+		logger.Info("agent persistence enabled", "backend", "file", "dir", cfg.StateDir)
+	}
 	mgr := agents.NewManager(slackApp, slackApp, thinker, store, logger)
 	if err := mgr.Restore(context.Background()); err != nil {
 		logger.Error("restore agents from store", "err", err)

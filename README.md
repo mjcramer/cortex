@@ -195,11 +195,23 @@ Agent state — name, channel ID, and conversation history — can be mirrored t
 - `Manager.Create` saves the new agent; each completed turn re-saves its (bounded) history; `Manager.Destroy` deletes it.
 - On startup, `Manager.Restore` reloads persisted agents and respawns their goroutines from the stored channel ID — **without** re-provisioning Slack channels.
 
-Backends (selected by `CORTEX_STATE_DIR`):
+**Choosing a backend.** The only knob is the `CORTEX_STATE_DIR` environment variable:
 
-- **`NoopStore`** (default, when `CORTEX_STATE_DIR` is unset) — persistence off; behaves exactly as before. This is *not* an in-memory store, just the absence of durable writes.
-- **`FileStore`** (when `CORTEX_STATE_DIR` is set) — one atomic JSON file per agent under that directory. Fixes local and warm in-instance restarts.
-- **`MemoryStore`** — a map-backed `Store` for tests only; does not survive restarts.
+| Backend | How to select it | Behavior |
+|---|---|---|
+| `NoopStore` | leave `CORTEX_STATE_DIR` **unset** (default) | persistence off — agents are forgotten on restart. *Not* an in-memory store, just no durable writes. |
+| `FileStore` | set `CORTEX_STATE_DIR=<dir>` | one atomic JSON file per agent under `<dir>`; agents reload on boot. Fixes local and warm in-instance restarts. |
+| `MemoryStore` | not selectable at runtime | test-only (`agents.NewMemoryStore`); does not survive restarts. |
+
+```bash
+# Persistence off (default) — nothing to set:
+make run
+
+# Persistence on — agents survive a restart:
+CORTEX_STATE_DIR=./.cortex-state make run
+```
+
+With `CORTEX_STATE_DIR` set you'll see `restored agents count=N` in the logs on boot, and a `<agent>.json` file appear under the directory for each agent. Point it at a path that persists across restarts (and, on a VM, across deploys). The directory is created if missing.
 
 > **Cloud Run caveat:** `FileStore` does **not** survive scale-to-zero — each new container gets a fresh ephemeral disk. Truly covering Cloud Run needs a network-backed `Store` (GCS/Firestore), which the `Store` interface makes a drop-in addition. That is deliberately a follow-up; sessions (`sessions.Manager`) remain in-memory by design.
 
