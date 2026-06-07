@@ -3,15 +3,19 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
 	BindAddr           string
 	DefaultWaitTimeout time.Duration
+	LogFormat          string // "json" or "text"
+	LogLevel           slog.Level
 	Slack              *SlackConfig
 }
 
@@ -38,11 +42,59 @@ func FromEnv() (*Config, error) {
 		return nil, err
 	}
 
+	logFormat := strings.ToLower(os.Getenv("CORTEX_LOG_FORMAT"))
+	if logFormat == "" {
+		// Cloud Run aggregates structured JSON logs; default to JSON there and
+		// to human-friendly text for local development.
+		if os.Getenv("PORT") != "" {
+			logFormat = "json"
+		} else {
+			logFormat = "text"
+		}
+	}
+	if logFormat != "json" && logFormat != "text" {
+		return nil, fmt.Errorf("invalid CORTEX_LOG_FORMAT %q: want \"json\" or \"text\"", logFormat)
+	}
+
+	logLevel, err := parseLogLevel(os.Getenv("CORTEX_LOG_LEVEL"))
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		BindAddr:           bindAddr,
 		DefaultWaitTimeout: time.Duration(timeoutSecs) * time.Second,
+		LogFormat:          logFormat,
+		LogLevel:           logLevel,
 		Slack:              slack,
 	}, nil
+}
+
+// NewLogger builds a slog.Logger that honors the configured format and level.
+func (c *Config) NewLogger() *slog.Logger {
+	opts := &slog.HandlerOptions{Level: c.LogLevel}
+	var h slog.Handler
+	if c.LogFormat == "text" {
+		h = slog.NewTextHandler(os.Stderr, opts)
+	} else {
+		h = slog.NewJSONHandler(os.Stderr, opts)
+	}
+	return slog.New(h)
+}
+
+func parseLogLevel(v string) (slog.Level, error) {
+	switch strings.ToLower(v) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("invalid CORTEX_LOG_LEVEL %q: want debug, info, warn, or error", v)
+	}
 }
 
 func slackConfigFromEnv() (*SlackConfig, error) {

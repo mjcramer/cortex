@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -35,15 +36,20 @@ func (DisabledNotifier) Notify(context.Context, *pb.AgentSignal) (sessions.Threa
 type App struct {
 	cfg    *config.SlackConfig
 	client *http.Client
+	log    *slog.Logger
 
 	mu       sync.RWMutex
 	channels map[string]string // agent name -> channel id
 }
 
-func NewApp(cfg *config.SlackConfig) *App {
+func NewApp(cfg *config.SlackConfig, logger *slog.Logger) *App {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &App{
 		cfg:      cfg,
 		client:   &http.Client{Timeout: 10 * time.Second},
+		log:      logger.With("component", "slack"),
 		channels: make(map[string]string),
 	}
 }
@@ -137,12 +143,14 @@ func (a *App) ensureChannel(ctx context.Context, agent string) (string, error) {
 				return "", err
 			}
 			a.cacheChannel(agent, id)
+			a.log.Info("joined existing slack channel", "agent", agent, "channel", name, "channel_id", id)
 			return id, nil
 		}
 		return "", err
 	}
 
 	a.cacheChannel(agent, id)
+	a.log.Info("created slack channel", "agent", agent, "channel", name, "channel_id", id)
 	return id, nil
 }
 
