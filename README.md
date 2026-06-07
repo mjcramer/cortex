@@ -42,7 +42,7 @@ SLACK_BOT_TOKEN=xoxb-... \
 SLACK_SIGNING_SECRET=signing-secret \
 make run
 
-# Open a public cloudflared tunnel to your local server for Slack callbacks
+# Open a public ngrok tunnel to your local server for Slack callbacks
 make tunnel TUNNEL_PORT=50051
 
 # Run tests

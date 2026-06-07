@@ -40,7 +40,7 @@ make fmt-check
 # Regenerate protobuf bindings from proto/
 make proto
 
-# Open a public cloudflared tunnel for Slack callbacks
+# Open a public ngrok tunnel for Slack callbacks
 make tunnel TUNNEL_PORT=50051
 ```
 
