@@ -23,7 +23,7 @@ make release
 make run
 
 # Run with explicit bind configuration
-CORTEX_HOST=127.0.0.1 CORTEX_PORT=50051 make run
+CORTEX_HOST=127.0.0.1 CORTEX_PORT=23001 make run
 
 # Run tests
 make test
@@ -40,8 +40,8 @@ make fmt-check
 # Regenerate protobuf bindings from proto/
 make proto
 
-# Open a public cloudflared tunnel for Slack callbacks
-make tunnel TUNNEL_PORT=50051
+# Open a public ngrok tunnel for Slack callbacks
+make tunnel TUNNEL_PORT=23001
 ```
 
 ### Direct Go Commands
@@ -59,7 +59,7 @@ go vet ./...
 
 ### Protobuf Compilation
 
-`proto/cortex.proto` is the source of truth. `make proto` regenerates `internal/cortexpb/cortex.pb.go` and `internal/cortexpb/cortex_grpc.pb.go`. The generated files are checked in. Requires `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc` on PATH (all provided by `mise install`).
+`proto/cortex.proto` is the source of truth. `make proto` regenerates `internal/cortexpb/cortex.pb.go` and `internal/cortexpb/cortex_grpc.pb.go`. The generated files are checked in. Requires `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc` on PATH.
 
 ## Architecture
 
@@ -77,27 +77,47 @@ The service is implemented in `internal/server/grpc.go` using an in-memory `sess
 
 ### Slack Identity Model
 
-One Slack app, one channel per agent (`#<prefix><agent>`). On the first `SendEvent` for a given agent:
+One Slack app, one channel per agent (`#<prefix><agent>`). The Slack client wraps [`github.com/slack-go/slack`](https://github.com/slack-go/slack) (signature verification, conversations API, events parsing). On the first `SendEvent` for a given agent:
 
-1. `slack.App.ensureChannel` checks the per-agent cache, then calls `conversations.create`. If `name_taken`, it falls back to `conversations.list` and `conversations.join`.
-2. The bot posts `chat.postMessage` with `username` set to the agent name so each agent presents a distinct identity in Slack without a separate Slack app per agent.
+1. `slack.App.ensureChannel` checks the per-agent cache, then calls `client.CreateConversationContext`. If Slack returns `name_taken`, it falls back to `GetConversationsContext` + `JoinConversationContext`.
+2. The bot posts via `client.PostMessageContext` with `slack.MsgOptionUsername(agent)` so each agent presents a distinct identity in Slack without a separate Slack app per agent.
 3. The resulting `(channel_id, thread_ts)` is stored against the session, and inbound `message` events route by that pair.
 
 ### Server Configuration
 
-The bind address is configurable:
-
-- `CORTEX_BIND_ADDR` overrides the full socket address
-- `CORTEX_HOST` overrides the host when `CORTEX_BIND_ADDR` is not set
-- `CORTEX_PORT` overrides the port when `PORT` is not set
-- `PORT` is used automatically for Cloud Run and defaults the host to `0.0.0.0`
-
-Slack configuration is driven by:
+**Required at startup** — the server exits non-zero if any are missing, and the Slack token is verified via `auth.test` so an invalid/revoked token also fails the boot:
 
 - `SLACK_BOT_TOKEN`
 - `SLACK_SIGNING_SECRET`
-- `SLACK_CHANNEL_PREFIX` (optional, default `agent-`)
-- `SLACK_API_BASE_URL` (optional, default `https://slack.com/api`)
+- `ANTHROPIC_API_KEY`
+
+**Optional, with defaults:**
+
+- `CORTEX_BIND_ADDR` full socket override
+- `CORTEX_HOST` host part when `CORTEX_BIND_ADDR` is not set
+- `CORTEX_PORT` port part when `PORT` is not set (default `23001`)
+- `PORT` Cloud Run-provided port; defaults the host to `0.0.0.0`
+- `CORTEX_DEFAULT_WAIT_TIMEOUT_SECONDS` default `WaitForResponse` timeout (default `300`)
+- `CORTEX_LOG_LEVEL` `trace` | `debug` | `info` (default) | `warn` | `error`
+- `SLACK_CHANNEL_PREFIX` (default `agent-`)
+- `SLACK_API_BASE_URL` (default `https://slack.com/api`)
+- `CORTEX_CLAUDE_MODEL` (default `claude-sonnet-4-6`)
+
+**Slack manifest auto-registration** (opt-in) — when enabled, the server pushes
+`integrations/slack/manifest.yaml` to Slack on startup (after the listener is up,
+so Slack's request-URL challenge can be answered), pointing the app's request
+URLs and event subscriptions at this instance. This is handled by
+`internal/slackadmin` and runs from `cmd/cortex/main.go`. It is non-fatal: a
+failure is logged and the server keeps serving.
+
+- `CORTEX_SLACK_AUTOREGISTER` set truthy (`1`/`true`/`yes`/`on`) to enable; off by default
+- `SLACK_APP_ID` required when enabled (e.g. `A0123456789`)
+- `SLACK_CALLBACK_URL` required when enabled — public HTTPS base, no trailing slash (e.g. your reserved ngrok domain or the Cloud Run URL)
+- `SLACK_CONFIG_REFRESH_TOKEN` first-run seed only; an app-config refresh token from api.slack.com. After the first run, tokens are read from the state file and rotated automatically (`tooling.tokens.rotate`)
+- `CORTEX_SLACK_TOKENS_PATH` state file for the rotating config token (default `$XDG_CONFIG_HOME/cortex/slack-tokens.json`, mode `0600`)
+- `CORTEX_SLACK_MANIFEST_PATH` manifest to push (default `integrations/slack/manifest.yaml`)
+
+The `make slack-sync` target remains as a manual, out-of-band alternative.
 
 ## Infrastructure
 
@@ -128,15 +148,14 @@ The current scaffold targets:
 
 ## Development Environment
 
-Tool management is handled by `mise` (configured in `mise.toml`):
+The following tools must be on PATH. Installation method is the developer's choice (Homebrew, asdf, mise, manual, etc.) — the project does not mandate one:
+
 - Go (latest stable)
-- `protoc`
-- `protoc-gen-go`, `protoc-gen-go-grpc` (installed as `go:` tools)
-- `terraform`
+- `protoc`, `protoc-gen-go`, `protoc-gen-go-grpc` — only for `make proto`; generated bindings are checked in
+- `terraform` — only for the infrastructure workflow
+- Google Cloud SDK — for authentication and deployment workflows
 
-The Google Cloud SDK is also required locally for authentication and deployment workflows.
-
-Run `mise install` to set up the development environment.
+Once Go is installed, `make build` / `make run` / `make test` work without the other tools.
 
 ## Code Modification Guidelines
 

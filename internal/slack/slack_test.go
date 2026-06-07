@@ -1,6 +1,10 @@
 package slack
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/slack-go/slack/slackevents"
+)
 
 func TestSanitizeChannelName(t *testing.T) {
 	cases := map[string]string{
@@ -20,15 +24,15 @@ func TestSanitizeChannelName(t *testing.T) {
 }
 
 func TestHumanThreadReply(t *testing.T) {
-	event := MessageEvent{
-		Type:     "message",
-		Channel:  "C123",
-		User:     "U123",
-		Text:     "ship it",
-		ThreadTS: "1710000000.1234",
-		TS:       "1710000001.1234",
+	event := &slackevents.MessageEvent{
+		Type:            "message",
+		Channel:         "C123",
+		User:            "U123",
+		Text:            "ship it",
+		ThreadTimeStamp: "1710000000.1234",
+		TimeStamp:       "1710000001.1234",
 	}
-	reply := event.HumanThreadReply()
+	reply := HumanThreadReply(event)
 	if reply == nil {
 		t.Fatal("expected reply, got nil")
 	}
@@ -41,29 +45,29 @@ func TestHumanThreadReply(t *testing.T) {
 }
 
 func TestHumanThreadReplyIgnoresBotMessages(t *testing.T) {
-	event := MessageEvent{
-		Type:     "message",
-		Channel:  "C123",
-		User:     "U123",
-		Text:     "hi",
-		ThreadTS: "1.1",
-		TS:       "1.2",
-		BotID:    "B123",
+	event := &slackevents.MessageEvent{
+		Type:            "message",
+		Channel:         "C123",
+		User:            "U123",
+		Text:            "hi",
+		ThreadTimeStamp: "1.1",
+		TimeStamp:       "1.2",
+		BotID:           "B123",
 	}
-	if reply := event.HumanThreadReply(); reply != nil {
+	if reply := HumanThreadReply(event); reply != nil {
 		t.Fatalf("expected nil for bot message, got %+v", reply)
 	}
 }
 
 func TestHumanThreadReplyIgnoresTopLevelMessages(t *testing.T) {
-	event := MessageEvent{
-		Type:    "message",
-		Channel: "C123",
-		User:    "U123",
-		Text:    "hi",
-		TS:      "1.2",
+	event := &slackevents.MessageEvent{
+		Type:      "message",
+		Channel:   "C123",
+		User:      "U123",
+		Text:      "hi",
+		TimeStamp: "1.2",
 	}
-	if reply := event.HumanThreadReply(); reply != nil {
+	if reply := HumanThreadReply(event); reply != nil {
 		t.Fatalf("expected nil for non-threaded message, got %+v", reply)
 	}
 }

@@ -7,8 +7,7 @@
 coverage.txt
 
 # Local environment
-.env
-.env.local
+.mise.toml
 
 # Editor / IDE
 .idea/

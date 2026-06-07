@@ -1,21 +1,15 @@
 package slack
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
 
 	"github.com/mjcramer/cortex/internal/config"
 	pb "github.com/mjcramer/cortex/internal/cortexpb"
@@ -26,24 +20,22 @@ type Notifier interface {
 	Notify(ctx context.Context, signal *pb.AgentSignal) (sessions.ThreadRef, error)
 }
 
-type DisabledNotifier struct{}
-
-func (DisabledNotifier) Notify(context.Context, *pb.AgentSignal) (sessions.ThreadRef, error) {
-	return sessions.ThreadRef{}, errors.New("slack is not configured")
-}
-
 type App struct {
 	cfg    *config.SlackConfig
-	client *http.Client
+	client *slack.Client
 
 	mu       sync.RWMutex
 	channels map[string]string // agent name -> channel id
 }
 
 func NewApp(cfg *config.SlackConfig) *App {
+	opts := []slack.Option{}
+	if cfg.APIBaseURL != "" && cfg.APIBaseURL != "https://slack.com/api" {
+		opts = append(opts, slack.OptionAPIURL(cfg.APIBaseURL+"/"))
+	}
 	return &App{
 		cfg:      cfg,
-		client:   &http.Client{Timeout: 10 * time.Second},
+		client:   slack.New(cfg.BotToken, opts...),
 		channels: make(map[string]string),
 	}
 }
@@ -52,64 +44,79 @@ func (a *App) ChannelNameFor(agent string) string {
 	return a.cfg.ChannelPrefix + sanitizeChannelName(agent)
 }
 
+// VerifyAuth calls Slack's auth.test to confirm the bot token is valid. We
+// run this at startup so an invalid or revoked token fails the boot rather
+// than the first slash command.
+func (a *App) VerifyAuth(ctx context.Context) (team, user string, err error) {
+	resp, err := a.client.AuthTestContext(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("slack auth.test: %w", err)
+	}
+	return resp.Team, resp.User, nil
+}
+
+// EnsureChannelForAgent satisfies the agents.ChannelProvisioner interface.
+func (a *App) EnsureChannelForAgent(ctx context.Context, agent string) (string, error) {
+	return a.ensureChannel(ctx, agent)
+}
+
+// ArchiveChannel archives a public channel by ID. Requires the channels:manage
+// scope (already in the bot's scope set).
+func (a *App) ArchiveChannel(ctx context.Context, channelID string) error {
+	if err := a.client.ArchiveConversationContext(ctx, channelID); err != nil {
+		if isSlackError(err, "already_archived") {
+			return nil
+		}
+		return fmt.Errorf("archive channel %s: %w", channelID, err)
+	}
+	return nil
+}
+
+// PostToChannel sends a plain message to the channel as the bot.
+func (a *App) PostToChannel(ctx context.Context, channelID, text string) error {
+	_, _, err := a.client.PostMessageContext(ctx, channelID,
+		slack.MsgOptionText(text, false),
+		slack.MsgOptionDisableLinkUnfurl(),
+		slack.MsgOptionDisableMediaUnfurl(),
+	)
+	if err != nil {
+		return fmt.Errorf("post to channel %s: %w", channelID, err)
+	}
+	return nil
+}
+
 func (a *App) Notify(ctx context.Context, signal *pb.AgentSignal) (sessions.ThreadRef, error) {
 	channelID, err := a.ensureChannel(ctx, signal.Agent)
 	if err != nil {
 		return sessions.ThreadRef{}, err
 	}
 
-	body := map[string]any{
-		"channel":      channelID,
-		"text":         formatSignalMessage(signal),
-		"unfurl_links": false,
-		"unfurl_media": false,
-		"username":     signal.Agent,
+	postedChannel, ts, err := a.client.PostMessageContext(ctx, channelID,
+		slack.MsgOptionText(formatSignalMessage(signal), false),
+		slack.MsgOptionUsername(signal.Agent),
+		slack.MsgOptionDisableLinkUnfurl(),
+		slack.MsgOptionDisableMediaUnfurl(),
+	)
+	if err != nil {
+		return sessions.ThreadRef{}, fmt.Errorf("post slack message: %w", err)
 	}
-
-	var resp struct {
-		OK      bool   `json:"ok"`
-		Error   string `json:"error"`
-		Channel string `json:"channel"`
-		TS      string `json:"ts"`
-	}
-
-	if err := a.postJSON(ctx, "/chat.postMessage", body, &resp); err != nil {
-		return sessions.ThreadRef{}, err
-	}
-	if !resp.OK {
-		return sessions.ThreadRef{}, slackError("chat.postMessage", resp.Error)
-	}
-	if resp.Channel == "" || resp.TS == "" {
+	if postedChannel == "" || ts == "" {
 		return sessions.ThreadRef{}, errors.New("slack chat.postMessage response missing channel or ts")
 	}
 
-	return sessions.ThreadRef{ChannelID: resp.Channel, ThreadTS: resp.TS}, nil
+	return sessions.ThreadRef{ChannelID: postedChannel, ThreadTS: ts}, nil
 }
 
 func (a *App) VerifyRequest(headers http.Header, body []byte) error {
-	signature := headers.Get("X-Slack-Signature")
-	timestampHeader := headers.Get("X-Slack-Request-Timestamp")
-	if signature == "" || timestampHeader == "" {
-		return errors.New("missing slack signature headers")
-	}
-
-	timestamp, err := strconv.ParseInt(timestampHeader, 10, 64)
+	verifier, err := slack.NewSecretsVerifier(headers, a.cfg.SigningSecret)
 	if err != nil {
-		return errors.New("invalid slack timestamp")
+		return fmt.Errorf("init slack verifier: %w", err)
 	}
-
-	now := time.Now().Unix()
-	if delta := now - timestamp; delta < -300 || delta > 300 {
-		return errors.New("stale slack request timestamp")
+	if _, err := verifier.Write(body); err != nil {
+		return fmt.Errorf("write body to verifier: %w", err)
 	}
-
-	mac := hmac.New(sha256.New, []byte(a.cfg.SigningSecret))
-	fmt.Fprintf(mac, "v0:%d:", timestamp)
-	mac.Write(body)
-	expected := "v0=" + hex.EncodeToString(mac.Sum(nil))
-
-	if !hmac.Equal([]byte(expected), []byte(signature)) {
-		return errors.New("invalid slack request signature")
+	if err := verifier.Ensure(); err != nil {
+		return fmt.Errorf("invalid slack request signature: %w", err)
 	}
 	return nil
 }
@@ -123,27 +130,30 @@ func (a *App) ensureChannel(ctx context.Context, agent string) (string, error) {
 	a.mu.RUnlock()
 
 	name := a.ChannelNameFor(agent)
-	id, err := a.createChannel(ctx, name)
-	if err != nil {
-		if err.Error() == "name_taken" {
-			id, lookupErr := a.lookupChannel(ctx, name)
-			if lookupErr != nil {
-				return "", lookupErr
-			}
-			if id == "" {
-				return "", fmt.Errorf("slack reports %q is taken but it was not listable", name)
-			}
-			if err := a.joinChannel(ctx, id); err != nil {
-				return "", err
-			}
-			a.cacheChannel(agent, id)
-			return id, nil
+	channel, err := a.client.CreateConversationContext(ctx, slack.CreateConversationParams{
+		ChannelName: name,
+		IsPrivate:   false,
+	})
+	switch {
+	case err == nil:
+		a.cacheChannel(agent, channel.ID)
+		return channel.ID, nil
+	case isSlackError(err, "name_taken"):
+		id, lookupErr := a.findChannel(ctx, name)
+		if lookupErr != nil {
+			return "", lookupErr
 		}
-		return "", err
+		if id == "" {
+			return "", fmt.Errorf("slack reports %q is taken but it was not listable", name)
+		}
+		if _, _, _, joinErr := a.client.JoinConversationContext(ctx, id); joinErr != nil && !isSlackError(joinErr, "already_in_channel") {
+			return "", fmt.Errorf("join existing channel %s: %w", id, joinErr)
+		}
+		a.cacheChannel(agent, id)
+		return id, nil
+	default:
+		return "", fmt.Errorf("create channel %s: %w", name, err)
 	}
-
-	a.cacheChannel(agent, id)
-	return id, nil
 }
 
 func (a *App) cacheChannel(agent, id string) {
@@ -152,156 +162,42 @@ func (a *App) cacheChannel(agent, id string) {
 	a.mu.Unlock()
 }
 
-func (a *App) createChannel(ctx context.Context, name string) (string, error) {
-	body := map[string]any{"name": name, "is_private": false}
-	var resp struct {
-		OK      bool   `json:"ok"`
-		Error   string `json:"error"`
-		Channel struct {
-			ID string `json:"id"`
-		} `json:"channel"`
+func (a *App) findChannel(ctx context.Context, name string) (string, error) {
+	params := &slack.GetConversationsParameters{
+		ExcludeArchived: true,
+		Limit:           200,
+		Types:           []string{"public_channel"},
 	}
-	if err := a.postJSON(ctx, "/conversations.create", body, &resp); err != nil {
-		return "", err
-	}
-	if !resp.OK {
-		if resp.Error == "" {
-			return "", errors.New("conversations.create returned ok=false")
-		}
-		return "", errors.New(resp.Error)
-	}
-	if resp.Channel.ID == "" {
-		return "", errors.New("conversations.create returned ok without a channel id")
-	}
-	return resp.Channel.ID, nil
-}
-
-func (a *App) lookupChannel(ctx context.Context, name string) (string, error) {
-	cursor := ""
 	for {
-		params := url.Values{}
-		params.Set("exclude_archived", "true")
-		params.Set("limit", "200")
-		params.Set("types", "public_channel")
-		if cursor != "" {
-			params.Set("cursor", cursor)
+		channels, nextCursor, err := a.client.GetConversationsContext(ctx, params)
+		if err != nil {
+			return "", fmt.Errorf("list channels: %w", err)
 		}
-
-		var resp struct {
-			OK       bool   `json:"ok"`
-			Error    string `json:"error"`
-			Channels []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"channels"`
-			ResponseMetadata struct {
-				NextCursor string `json:"next_cursor"`
-			} `json:"response_metadata"`
-		}
-
-		if err := a.getJSON(ctx, "/conversations.list", params, &resp); err != nil {
-			return "", err
-		}
-		if !resp.OK {
-			return "", slackError("conversations.list", resp.Error)
-		}
-		for _, c := range resp.Channels {
-			if c.Name == name {
-				return c.ID, nil
+		for _, ch := range channels {
+			if ch.Name == name {
+				return ch.ID, nil
 			}
 		}
-		if resp.ResponseMetadata.NextCursor == "" {
+		if nextCursor == "" {
 			return "", nil
 		}
-		cursor = resp.ResponseMetadata.NextCursor
+		params.Cursor = nextCursor
 	}
 }
 
-func (a *App) joinChannel(ctx context.Context, channelID string) error {
-	var resp struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error"`
+// isSlackError reports whether err carries the given Slack API error code.
+// slack-go surfaces these in a few different shapes (SlackErrorResponse for
+// API ok:false, plain errors.New for some call sites), so we type-check the
+// structured case and fall back to the error string.
+func isSlackError(err error, code string) bool {
+	if err == nil {
+		return false
 	}
-	if err := a.postJSON(ctx, "/conversations.join", map[string]any{"channel": channelID}, &resp); err != nil {
-		return err
+	var apiErr slack.SlackErrorResponse
+	if errors.As(err, &apiErr) {
+		return apiErr.Err == code
 	}
-	if !resp.OK {
-		return slackError("conversations.join", resp.Error)
-	}
-	return nil
-}
-
-func (a *App) postJSON(ctx context.Context, path string, body any, out any) error {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("encode %s payload: %w", path, err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.APIBaseURL+path, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+a.cfg.BotToken)
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	return a.do(req, path, out)
-}
-
-func (a *App) getJSON(ctx context.Context, path string, params url.Values, out any) error {
-	endpoint := a.cfg.APIBaseURL + path
-	if len(params) > 0 {
-		endpoint += "?" + params.Encode()
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+a.cfg.BotToken)
-	return a.do(req, path, out)
-}
-
-func (a *App) do(req *http.Request, path string, out any) error {
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("call slack %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read slack %s response: %w", path, err)
-	}
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("slack %s returned HTTP %d", path, resp.StatusCode)
-	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("decode slack %s response: %w", path, err)
-	}
-	return nil
-}
-
-func slackError(op, msg string) error {
-	if msg == "" {
-		return fmt.Errorf("%s returned ok=false", op)
-	}
-	return errors.New(msg)
-}
-
-// MessageEvent mirrors the subset of Slack's `message` event we care about.
-type MessageEvent struct {
-	Type     string `json:"type"`
-	Channel  string `json:"channel"`
-	User     string `json:"user"`
-	Text     string `json:"text"`
-	ThreadTS string `json:"thread_ts"`
-	TS       string `json:"ts"`
-	Subtype  string `json:"subtype"`
-	BotID    string `json:"bot_id"`
-}
-
-// Envelope is the outer Slack event payload.
-type Envelope struct {
-	Type      string          `json:"type"`
-	Challenge string          `json:"challenge"`
-	Event     json.RawMessage `json:"event"`
+	return err.Error() == code || strings.Contains(err.Error(), code)
 }
 
 type ThreadReply struct {
@@ -310,23 +206,33 @@ type ThreadReply struct {
 	Text   string
 }
 
-func (e MessageEvent) HumanThreadReply() *ThreadReply {
-	if e.Type != "message" {
+// ParseEvent decodes a Slack Events API envelope. Signature verification must
+// be performed by the caller (we already do this in App.VerifyRequest before
+// reaching here).
+func ParseEvent(body []byte) (slackevents.EventsAPIEvent, error) {
+	return slackevents.ParseEvent(body, slackevents.OptionNoVerifyToken())
+}
+
+// HumanThreadReply extracts a thread reply from a Slack message event, ignoring
+// bot messages, message subtypes (edits/deletes), and top-level (non-threaded)
+// messages.
+func HumanThreadReply(event *slackevents.MessageEvent) *ThreadReply {
+	if event == nil || event.Type != "message" {
 		return nil
 	}
-	if e.Subtype != "" || e.BotID != "" {
+	if event.SubType != "" || event.BotID != "" {
 		return nil
 	}
-	if e.Channel == "" || e.ThreadTS == "" || e.User == "" {
+	if event.Channel == "" || event.ThreadTimeStamp == "" || event.User == "" {
 		return nil
 	}
-	text := strings.TrimSpace(e.Text)
+	text := strings.TrimSpace(event.Text)
 	if text == "" {
 		return nil
 	}
 	return &ThreadReply{
-		Thread: sessions.ThreadRef{ChannelID: e.Channel, ThreadTS: e.ThreadTS},
-		UserID: e.User,
+		Thread: sessions.ThreadRef{ChannelID: event.Channel, ThreadTS: event.ThreadTimeStamp},
+		UserID: event.User,
 		Text:   text,
 	}
 }
