@@ -60,16 +60,34 @@ func (a *App) EnsureChannelForAgent(ctx context.Context, agent string) (string, 
 	return a.ensureChannel(ctx, agent)
 }
 
-// ArchiveChannel archives a public channel by ID. Requires the channels:manage
-// scope (already in the bot's scope set).
+// ArchiveChannel retires an agent's channel: it renames the channel aside to
+// free its name, then archives it, then drops it from the per-agent cache.
+//
+// Why rename before archiving? A bot token cannot reliably reopen an archived
+// channel later — `conversations.unarchive` returns not_in_channel once
+// archiving drops the bot's membership, and you can't rejoin an archived
+// channel. So rather than depend on reopening, we free the name now (while the
+// channel is active and the bot is a member, so rename is allowed). A future
+// agent with the same name then gets a clean new channel. Requires the
+// channels:manage scope (already in the bot's scope set).
 func (a *App) ArchiveChannel(ctx context.Context, channelID string) error {
-	if err := a.client.ArchiveConversationContext(ctx, channelID); err != nil {
-		if isSlackError(err, "already_archived") {
-			return nil
-		}
+	// Best-effort rename to free the name. If it fails (e.g. already archived),
+	// proceed to archive anyway; the worst case is the name stays taken and a
+	// later recreate surfaces a clear error from adoptExistingChannel.
+	_, _ = a.client.RenameConversationContext(ctx, channelID, archivedChannelName(channelID))
+
+	if err := a.client.ArchiveConversationContext(ctx, channelID); err != nil && !isSlackError(err, "already_archived") {
 		return fmt.Errorf("archive channel %s: %w", channelID, err)
 	}
+	a.forgetChannelByID(channelID)
 	return nil
+}
+
+// archivedChannelName derives a unique, valid channel name to park a retired
+// channel under, freeing the original agent name. Channel IDs are unique and
+// use only characters legal in channel names once lowercased.
+func archivedChannelName(channelID string) string {
+	return "archived-" + strings.ToLower(channelID)
 }
 
 // PostToChannel sends a plain message to the channel as the bot.
@@ -139,21 +157,37 @@ func (a *App) ensureChannel(ctx context.Context, agent string) (string, error) {
 		a.cacheChannel(agent, channel.ID)
 		return channel.ID, nil
 	case isSlackError(err, "name_taken"):
-		id, lookupErr := a.findChannel(ctx, name)
-		if lookupErr != nil {
-			return "", lookupErr
-		}
-		if id == "" {
-			return "", fmt.Errorf("slack reports %q is taken but it was not listable", name)
-		}
-		if _, _, _, joinErr := a.client.JoinConversationContext(ctx, id); joinErr != nil && !isSlackError(joinErr, "already_in_channel") {
-			return "", fmt.Errorf("join existing channel %s: %w", id, joinErr)
-		}
-		a.cacheChannel(agent, id)
-		return id, nil
+		return a.adoptExistingChannel(ctx, agent, name)
 	default:
 		return "", fmt.Errorf("create channel %s: %w", name, err)
 	}
+}
+
+// adoptExistingChannel handles a name_taken on create: a channel with this name
+// already exists. Normally that's an active channel the bot can simply join
+// (e.g. created out of band). If it's archived, the bot generally cannot reopen
+// it (see ArchiveChannel) — we make a best-effort unarchive but, failing that,
+// return an actionable error rather than leaving the agent pointed at a dead
+// channel. (Going forward, destroy frees the name via rename, so an archived
+// channel under a live agent name should be a legacy/out-of-band case.)
+func (a *App) adoptExistingChannel(ctx context.Context, agent, name string) (string, error) {
+	ch, err := a.findChannel(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	if ch == nil {
+		return "", fmt.Errorf("slack reports %q is taken but it was not listable", name)
+	}
+	if ch.IsArchived {
+		if err := a.client.UnArchiveConversationContext(ctx, ch.ID); err != nil {
+			return "", fmt.Errorf("channel %q (%s) is archived and Cortex cannot reopen it with a bot token (%w); unarchive or rename it in Slack, then retry", name, ch.ID, err)
+		}
+	}
+	if _, _, _, err := a.client.JoinConversationContext(ctx, ch.ID); err != nil && !isSlackError(err, "already_in_channel") {
+		return "", fmt.Errorf("join existing channel %s: %w", ch.ID, err)
+	}
+	a.cacheChannel(agent, ch.ID)
+	return ch.ID, nil
 }
 
 func (a *App) cacheChannel(agent, id string) {
@@ -162,24 +196,40 @@ func (a *App) cacheChannel(agent, id string) {
 	a.mu.Unlock()
 }
 
-func (a *App) findChannel(ctx context.Context, name string) (string, error) {
+// forgetChannelByID removes any cache entry pointing at channelID, so the next
+// ensureChannel re-resolves it (and can unarchive) instead of returning a dead
+// channel. Called on archive.
+func (a *App) forgetChannelByID(channelID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for agent, id := range a.channels {
+		if id == channelID {
+			delete(a.channels, agent)
+		}
+	}
+}
+
+// findChannel returns the channel with the given name, or nil if none exists.
+// Archived channels are included so a destroyed agent's channel can be found
+// and reopened on recreate.
+func (a *App) findChannel(ctx context.Context, name string) (*slack.Channel, error) {
 	params := &slack.GetConversationsParameters{
-		ExcludeArchived: true,
+		ExcludeArchived: false,
 		Limit:           200,
 		Types:           []string{"public_channel"},
 	}
 	for {
 		channels, nextCursor, err := a.client.GetConversationsContext(ctx, params)
 		if err != nil {
-			return "", fmt.Errorf("list channels: %w", err)
+			return nil, fmt.Errorf("list channels: %w", err)
 		}
-		for _, ch := range channels {
-			if ch.Name == name {
-				return ch.ID, nil
+		for i := range channels {
+			if channels[i].Name == name {
+				return &channels[i], nil
 			}
 		}
 		if nextCursor == "" {
-			return "", nil
+			return nil, nil
 		}
 		params.Cursor = nextCursor
 	}

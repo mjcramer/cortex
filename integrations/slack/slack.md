@@ -190,6 +190,8 @@ Expected behaviour:
 4. Type anything in the channel — if `ANTHROPIC_API_KEY` is set, the agent replies via Claude; otherwise it echoes.
 5. When you're done, `/cortex agent destroy demo-bot` archives the channel.
 
+> **Destroy renames-and-archives; recreate is fresh.** Slack has no channel-delete API for normal apps, and a bot token cannot reopen an archived channel (`conversations.unarchive` returns `not_in_channel` once archiving drops the bot's membership). So `agent destroy` **renames** `#agent-<name>` aside (to `archived-<channelid>`) and then archives it — freeing the name so a later `agent create` of the same name gets a brand-new channel. The agent starts a fresh conversation either way (its persisted state was deleted on destroy). Channels left archived by older builds (or archived by hand) that still hold an agent's name can't be reopened by the bot; unarchive or rename them in Slack, then retry — `agent create` will report this clearly if it happens.
+
 You can also list active agents:
 
 ```
