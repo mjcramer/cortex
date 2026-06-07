@@ -130,6 +130,79 @@ The current prototype keeps session state in memory. `SendEvent` resolves the ag
 
 The end-to-end Slack message flow (agent → channel → human reply → unblocked session) is documented in [`integrations/slack/slack.md`](integrations/slack/slack.md#how-it-works-runtime-flow).
 
+### Slash Command Flow
+
+`/cortex` slash commands take a separate inbound path from agent gRPC traffic and from Slack events. They are handled synchronously by `CommandsHandler` (`internal/server/commands.go`):
+
+1. **Slack → server.** Slack POSTs the command to `<SLACK_CALLBACK_URL>/slack/commands` (the URL in the manifest's `slash_commands` block) as `application/x-www-form-urlencoded` — unlike events, which are JSON.
+2. **Routing.** The `mixed` handler in `main.go` sees a non-gRPC request and forwards to the HTTP mux, which routes `/slack/commands` to `CommandsHandler.ServeHTTP`.
+3. **Verify + parse.** The handler reads the body, verifies the Slack signature (same gate as events; bad signature → `401`), then `url.ParseQuery`s the form into a `slashCommand` (`command`, `text`, `user_id`, `channel_id`, `response_url`).
+4. **Dispatch.** `dispatch` tokenizes the text and routes `agent create|destroy|list` (and `help`) to the matching handler:
+   - `create`: validate the name → `Agents.Create` (provision the channel + spawn the agent goroutine) → post an async `:wave:` welcome into the new channel → reply.
+   - `destroy`: `Agents.Destroy` (stop the goroutine + archive the channel) → reply.
+   - `list`: `Agents.List` → reply.
+5. **Reply.** The handler returns a JSON `slashResponse` **synchronously** in the HTTP response, with a `response_type` of either `ephemeral` (only the invoking user sees it — errors, `list`, usage) or `in_channel` (visible to everyone — successful create/destroy).
+
+```
+/cortex agent create demo-bot
+        │
+        ▼  POST /slack/commands  (form-encoded)
+mixed handler ──▶ HTTP mux ──▶ CommandsHandler.ServeHTTP
+        │
+        ├─ verify signature (401 on failure)
+        ├─ parse form → slashCommand
+        └─ dispatch ──▶ handleCreate ──▶ Agents.Create (channel + goroutine)
+                                  │                └─ async: post welcome to channel
+                                  ▼
+                        JSON reply (ephemeral | in_channel) ──▶ Slack renders to user
+```
+
+Slack requires a response within ~3 seconds. Create/destroy are fast enough (one channel API call plus a goroutine spawn) to run inline, so the command replies directly and the `response_url` deferred-response two-step is deliberately unused. If an operation ever became slow, the handler would ack immediately and post the result to `response_url` instead. This contrasts with the event path, which returns `200` immediately and does its work asynchronously.
+
+### Agent Runtime
+
+An "agent" has no separate process — it is a single **goroutine plus an in-memory mailbox**, managed by `agents.Manager` (`internal/agents/`). The runtime is always in-memory; whether that state *survives a restart* depends on the configured `Store` (see [Persistence](#agent-persistence) below).
+
+**Creation** (`Manager.Create`): provision the Slack channel (`EnsureChannelForAgent` creates or finds `#<prefix><name>`), then construct the `Agent` and start its `run()` goroutine. The agent is indexed by name (for destroy/list) and by channel ID (for message routing). It is created with a background context, not the request context, so it outlives the slash command and runs until destroyed or the server shuts down.
+
+**The run loop** (`agent.go`) selects over two things: a cancellation signal (stop) and an `inbox` channel (a buffered queue of incoming messages, capacity 32; a full inbox drops messages with a warning). Messages are handled one at a time, so an agent's turns never race.
+
+**Who it talks to.** Each agent sits between one inbound source and two outbound services:
+
+1. **Inbound — Slack events.** A top-level message in the agent's channel arrives at `/slack/events`, and `handleMessage` → `Manager.RouteMessage` → `agent.deliver` puts it on the `inbox`.
+2. **Outbound — Anthropic (to think).** `handle` snapshots the history, sets a 60s timeout, and calls `Thinker.Respond`, which POSTs to the Anthropic Messages API (`internal/claude/`) with a per-agent system prompt, the conversation history, and the new message. Model is `CORTEX_CLAUDE_MODEL` (default `claude-sonnet-4-6`).
+3. **Outbound — Slack (to reply).** The returned text is appended to history (bounded to the last 50 turns) and posted back into the channel via `PostToChannel` (`chat.postMessage`). A thinker error posts an `_(agent error: …)_` notice instead.
+
+```
+human msg in #agent-demo-bot
+        │  POST /slack/events
+        ▼
+handleMessage ──▶ Manager.RouteMessage ──▶ agent.deliver ──▶ inbox
+                                                               │
+                                            run() loop ──▶ handle()
+                                                               │
+                                  Thinker.Respond ──▶ POST Anthropic Messages API
+                                                               │
+                              reply ──▶ PostToChannel ──▶ Slack chat.postMessage ──▶ channel
+```
+
+A single `Thinker` is shared across all agents — it holds the Anthropic client and is stateless per-agent (the only per-agent inputs are the name and the history the agent passes in). The `agents.Thinker` interface is the seam that decouples the agent goroutine from Anthropic, so tests can substitute a fake (and `EchoThinker` serves as a placeholder that just echoes).
+
+#### Agent persistence
+
+Agent state — name, channel ID, and conversation history — can be mirrored to a `Store` so agents survive restarts. The runtime is unchanged: agents still run from the in-memory maps; the `Store` only decides whether that state is *also* written durably and *reloaded on boot*.
+
+- `Manager.Create` saves the new agent; each completed turn re-saves its (bounded) history; `Manager.Destroy` deletes it.
+- On startup, `Manager.Restore` reloads persisted agents and respawns their goroutines from the stored channel ID — **without** re-provisioning Slack channels.
+
+Backends (selected by `CORTEX_STATE_DIR`):
+
+- **`NoopStore`** (default, when `CORTEX_STATE_DIR` is unset) — persistence off; behaves exactly as before. This is *not* an in-memory store, just the absence of durable writes.
+- **`FileStore`** (when `CORTEX_STATE_DIR` is set) — one atomic JSON file per agent under that directory. Fixes local and warm in-instance restarts.
+- **`MemoryStore`** — a map-backed `Store` for tests only; does not survive restarts.
+
+> **Cloud Run caveat:** `FileStore` does **not** survive scale-to-zero — each new container gets a fresh ephemeral disk. Truly covering Cloud Run needs a network-backed `Store` (GCS/Firestore), which the `Store` interface makes a drop-in addition. That is deliberately a follow-up; sessions (`sessions.Manager`) remain in-memory by design.
+
 ### Runtime Configuration
 
 **Required.** The server refuses to start if any of these are missing or invalid. `SLACK_BOT_TOKEN` is verified via Slack's `auth.test` at boot, so a bad/revoked token fails fast rather than at first use.
@@ -145,6 +218,7 @@ The end-to-end Slack message flow (agent → channel → human reply → unblock
 - `CORTEX_PORT`: port override when `PORT` is not set (default `23001`)
 - `PORT`: Cloud Run-provided port; when present, Cortex defaults to `0.0.0.0:$PORT`
 - `CORTEX_DEFAULT_WAIT_TIMEOUT_SECONDS`: default `WaitForResponse` timeout when the request omits one (default `300`)
+- `CORTEX_STATE_DIR`: directory for persisting agent state so agents survive restarts (default empty = persistence off). See [Agent persistence](#agent-persistence)
 - `CORTEX_CLAUDE_MODEL`: model id (default `claude-sonnet-4-6`)
 - `CORTEX_LOG_LEVEL`: one of `trace`, `debug`, `info` (default), `warn`, `error`. At `debug`, every HTTP request and gRPC RPC is logged with method, path, status, and duration. At `trace`, the full request body and headers are logged too (the `X-Slack-Signature` header is auto-redacted).
 

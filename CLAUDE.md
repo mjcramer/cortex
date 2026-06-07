@@ -98,6 +98,7 @@ One Slack app, one channel per agent (`#<prefix><agent>`). The Slack client wrap
 - `CORTEX_PORT` port part when `PORT` is not set (default `23001`)
 - `PORT` Cloud Run-provided port; defaults the host to `0.0.0.0`
 - `CORTEX_DEFAULT_WAIT_TIMEOUT_SECONDS` default `WaitForResponse` timeout (default `300`)
+- `CORTEX_STATE_DIR` directory for persisting agent state across restarts (default empty = persistence off; uses `agents.FileStore`)
 - `CORTEX_LOG_LEVEL` `trace` | `debug` | `info` (default) | `warn` | `error`
 - `SLACK_CHANNEL_PREFIX` (default `agent-`)
 - `SLACK_API_BASE_URL` (default `https://slack.com/api`)
