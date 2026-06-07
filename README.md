@@ -110,6 +110,12 @@ The server supports the following bind configuration:
 - `PORT`: Cloud Run-provided port; when present, Cortex defaults to `0.0.0.0:$PORT`
 - `CORTEX_DEFAULT_WAIT_TIMEOUT_SECONDS`: default `WaitForResponse` timeout when the request does not provide one
 
+Logging is configured with:
+
+- `CORTEX_LOG_FORMAT`: `console`/`text` for the colorized human-readable console layout, or `json` for structured logs. Defaults to `json` when `PORT` is set (Cloud Run) and `console` locally.
+- `CORTEX_LOG_LEVEL`: `trace`, `debug`, `info`, `warn`, or `error` (default `info`). `trace` is an alias for `debug`. Set `debug` to log agent and Slack message bodies.
+- `CORTEX_LOG_COLOR`: `always` or `never` to force ANSI colors; otherwise color is enabled when stderr is a TTY and `NO_COLOR` is unset.
+
 The Slack prototype uses:
 
 - `SLACK_BOT_TOKEN`: bot token with `chat:write`, `chat:write.customize`, `channels:manage`, `channels:read`, and `channels:join`

@@ -87,6 +87,8 @@ func (h *HTTPHandler) handleReply(event slack.MessageEvent) {
 		// A reply in a thread we don't track (e.g. unrelated channel chatter).
 		return
 	}
+	h.Log.Debug("slack reply received",
+		"session_id", sessionID, "responder", reply.UserID, "message", reply.Text)
 	if err := h.Sessions.Submit(&pb.HumanReply{
 		SessionId: sessionID,
 		Response:  reply.Text,

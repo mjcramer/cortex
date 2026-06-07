@@ -46,6 +46,7 @@ func (c *Cortex) SendEvent(ctx context.Context, signal *pb.AgentSignal) (*pb.Ack
 
 	log := c.Log.With("session_id", signal.SessionId, "agent", signal.Agent)
 	log.Info("agent event received", "repo", signal.Repo)
+	log.Debug("agent message", "message", signal.Message)
 
 	thread, err := c.Notifier.Notify(ctx, signal)
 	if err != nil {

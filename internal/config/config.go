@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mjcramer/cortex/internal/logging"
 )
 
 type Config struct {
@@ -52,8 +54,8 @@ func FromEnv() (*Config, error) {
 			logFormat = "text"
 		}
 	}
-	if logFormat != "json" && logFormat != "text" {
-		return nil, fmt.Errorf("invalid CORTEX_LOG_FORMAT %q: want \"json\" or \"text\"", logFormat)
+	if logFormat != "json" && logFormat != "text" && logFormat != "console" {
+		return nil, fmt.Errorf("invalid CORTEX_LOG_FORMAT %q: want \"json\", \"text\", or \"console\"", logFormat)
 	}
 
 	logLevel, err := parseLogLevel(os.Getenv("CORTEX_LOG_LEVEL"))
@@ -71,29 +73,46 @@ func FromEnv() (*Config, error) {
 }
 
 // NewLogger builds a slog.Logger that honors the configured format and level.
+// "json" uses slog's JSON handler (for Cloud Run log aggregation); "text" and
+// "console" use the colorized Logback-style console handler.
 func (c *Config) NewLogger() *slog.Logger {
-	opts := &slog.HandlerOptions{Level: c.LogLevel}
-	var h slog.Handler
-	if c.LogFormat == "text" {
-		h = slog.NewTextHandler(os.Stderr, opts)
-	} else {
-		h = slog.NewJSONHandler(os.Stderr, opts)
+	if c.LogFormat == "json" {
+		h := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: c.LogLevel})
+		return slog.New(h)
 	}
-	return slog.New(h)
+	return slog.New(logging.NewConsoleHandler(os.Stderr, c.LogLevel, shouldColor()))
+}
+
+// shouldColor decides whether to emit ANSI colors. CORTEX_LOG_COLOR=always|never
+// forces the choice; otherwise color is on when stderr is a TTY and NO_COLOR is
+// unset (https://no-color.org).
+func shouldColor() bool {
+	switch strings.ToLower(os.Getenv("CORTEX_LOG_COLOR")) {
+	case "always", "1", "true":
+		return true
+	case "never", "0", "false":
+		return false
+	default:
+		if os.Getenv("NO_COLOR") != "" {
+			return false
+		}
+		return logging.IsTerminal(os.Stderr)
+	}
 }
 
 func parseLogLevel(v string) (slog.Level, error) {
 	switch strings.ToLower(v) {
 	case "", "info":
 		return slog.LevelInfo, nil
-	case "debug":
+	case "trace", "debug":
+		// slog has no trace level; "trace" is accepted as an alias for debug.
 		return slog.LevelDebug, nil
 	case "warn", "warning":
 		return slog.LevelWarn, nil
 	case "error":
 		return slog.LevelError, nil
 	default:
-		return 0, fmt.Errorf("invalid CORTEX_LOG_LEVEL %q: want debug, info, warn, or error", v)
+		return 0, fmt.Errorf("invalid CORTEX_LOG_LEVEL %q: want trace, debug, info, warn, or error", v)
 	}
 }
 
