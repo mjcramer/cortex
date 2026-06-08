@@ -1,0 +1,96 @@
+<svg width="1200" height="900" viewBox="0 0 1200 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Cortex logo</title>
+  <desc id="desc">A high-tech cerebral cortex style logo with circuit traces and the word Cortex.</desc>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#111a33"/>
+      <stop offset="55%" stop-color="#070b16"/>
+      <stop offset="100%" stop-color="#02040a"/>
+    </radialGradient>
+    <linearGradient id="brainStroke" x1="270" y1="240" x2="930" y2="610" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="0.28" stop-color="#3b82f6"/>
+      <stop offset="0.52" stop-color="#a855f7"/>
+      <stop offset="0.76" stop-color="#f43f8f"/>
+      <stop offset="1" stop-color="#fb923c"/>
+    </linearGradient>
+    <linearGradient id="wordStroke" x1="250" y1="740" x2="950" y2="740" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="0.45" stop-color="#dbeafe"/>
+      <stop offset="0.7" stop-color="#c084fc"/>
+      <stop offset="1" stop-color="#fdba74"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <style>
+      .trace{fill:none;stroke:url(#brainStroke);stroke-width:9;stroke-linecap:round;stroke-linejoin:round;filter:url(#glow)}
+      .thin{fill:none;stroke:url(#brainStroke);stroke-width:4;stroke-linecap:round;stroke-linejoin:round;opacity:.75}
+      .node{fill:#07111f;stroke:url(#brainStroke);stroke-width:6;filter:url(#softGlow)}
+      .hud{fill:none;stroke:url(#brainStroke);stroke-width:3;stroke-linecap:round;opacity:.5}
+      .word{font-family:Orbitron, Eurostile, 'Bank Gothic', 'Segoe UI', sans-serif;font-size:92px;letter-spacing:34px;fill:url(#wordStroke);filter:url(#glow)}
+    </style>
+  </defs>
+
+  <rect width="1200" height="900" fill="url(#bg)"/>
+
+  <!-- subtle HUD frame -->
+  <path class="hud" d="M330 190 L285 190 L250 225 M870 190 L915 190 L950 225"/>
+  <path class="hud" d="M250 565 L285 600 L330 600 M950 565 L915 600 L870 600"/>
+  <path class="hud" d="M315 145 Q600 60 885 145" opacity=".25"/>
+  <path class="hud" d="M315 645 Q600 730 885 645" opacity=".25"/>
+  <circle cx="600" cy="395" r="310" fill="none" stroke="url(#brainStroke)" stroke-width="2" stroke-dasharray="8 18" opacity=".35"/>
+  <circle cx="600" cy="395" r="260" fill="none" stroke="url(#brainStroke)" stroke-width="2" stroke-dasharray="2 18" opacity=".3"/>
+
+  <!-- brain outline -->
+  <path class="trace" d="M585 580 C520 590 460 575 420 535 C375 548 315 518 304 462 C260 439 250 365 290 328 C284 270 338 226 395 238 C420 194 485 184 525 218 C560 214 582 236 585 266 Z"/>
+  <path class="trace" d="M615 580 C680 590 740 575 780 535 C825 548 885 518 896 462 C940 439 950 365 910 328 C916 270 862 226 805 238 C780 194 715 184 675 218 C640 214 618 236 615 266 Z"/>
+  <path class="trace" d="M600 210 V610"/>
+
+  <!-- left cortex traces -->
+  <path class="thin" d="M555 275 C515 280 500 315 468 318 H400"/>
+  <path class="thin" d="M555 345 C512 350 500 390 460 394 H355"/>
+  <path class="thin" d="M555 420 C510 420 505 470 455 480 H385"/>
+  <path class="thin" d="M545 510 C500 510 490 545 438 545"/>
+  <path class="thin" d="M520 245 C470 255 455 285 420 292"/>
+  <path class="thin" d="M525 372 C480 370 455 338 430 338"/>
+  <path class="thin" d="M505 455 C465 440 435 430 405 435"/>
+  <path class="thin" d="M470 520 C450 505 430 492 405 492"/>
+
+  <!-- right cortex traces -->
+  <path class="thin" d="M645 275 C685 280 700 315 732 318 H800"/>
+  <path class="thin" d="M645 345 C688 350 700 390 740 394 H845"/>
+  <path class="thin" d="M645 420 C690 420 695 470 745 480 H815"/>
+  <path class="thin" d="M655 510 C700 510 710 545 762 545"/>
+  <path class="thin" d="M680 245 C730 255 745 285 780 292"/>
+  <path class="thin" d="M675 372 C720 370 745 338 770 338"/>
+  <path class="thin" d="M695 455 C735 440 765 430 795 435"/>
+  <path class="thin" d="M730 520 C750 505 770 492 795 492"/>
+
+  <!-- central C hex mark -->
+  <g filter="url(#glow)">
+    <path d="M600 344 L666 382 L666 458 L600 496 L534 458 L534 382 Z" fill="#08111f" stroke="url(#brainStroke)" stroke-width="7"/>
+    <path d="M628 392 L600 376 L572 392 L572 448 L600 464 L628 448" fill="none" stroke="url(#brainStroke)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="600" cy="420" r="17" fill="#111827" stroke="url(#brainStroke)" stroke-width="5"/>
+  </g>
+
+  <!-- nodes -->
+  <circle class="node" cx="400" cy="318" r="10"/><circle class="node" cx="355" cy="394" r="10"/><circle class="node" cx="385" cy="480" r="10"/><circle class="node" cx="438" cy="545" r="10"/><circle class="node" cx="420" cy="292" r="8"/><circle class="node" cx="430" cy="338" r="8"/><circle class="node" cx="405" cy="435" r="8"/><circle class="node" cx="405" cy="492" r="8"/>
+  <circle class="node" cx="800" cy="318" r="10"/><circle class="node" cx="845" cy="394" r="10"/><circle class="node" cx="815" cy="480" r="10"/><circle class="node" cx="762" cy="545" r="10"/><circle class="node" cx="780" cy="292" r="8"/><circle class="node" cx="770" cy="338" r="8"/><circle class="node" cx="795" cy="435" r="8"/><circle class="node" cx="795" cy="492" r="8"/>
+
+  <!-- wordmark -->
+  <text class="word" x="600" y="760" text-anchor="middle">CORTEX</text>
+  <path class="hud" d="M320 800 H530 M670 800 H880"/>
+  <circle cx="600" cy="800" r="14" fill="#09111f" stroke="url(#brainStroke)" stroke-width="4" filter="url(#glow)"/>
+</svg>
