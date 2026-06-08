@@ -38,7 +38,7 @@ func main() {
 	logger := logging.New(os.Stderr, cfg.LogLevel)
 	slog.SetDefault(logger)
 
-	slackApp := slack.NewApp(cfg.Slack)
+	slackApp := slack.NewApp(cfg.Slack, logger)
 
 	authCtx, authCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	team, user, err := slackApp.VerifyAuth(authCtx)
@@ -50,7 +50,7 @@ func main() {
 	logger.Info("slack auth verified", "team", team, "bot_user", user)
 
 	sm := sessions.NewManager()
-	thinker := claude.NewThinker(cfg.Claude)
+	thinker := claude.NewThinker(cfg.Claude, logger)
 
 	store, err := agents.NewStore(cfg.StateDir)
 	if err != nil {
@@ -69,7 +69,7 @@ func main() {
 	}
 	commands := server.NewCommandsHandler(slackApp, mgr, logger)
 
-	cortex := server.NewCortex(cfg, sm, slackApp)
+	cortex := server.NewCortex(cfg, sm, slackApp, logger)
 	httpRouter := server.NewHTTPHandler(sm, slackApp, mgr, commands, logger).Routes()
 	httpHandler := server.HTTPRequestLogger(logger)(httpRouter)
 

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -21,16 +22,23 @@ type Cortex struct {
 	Cfg      *config.Config
 	Sessions *sessions.Manager
 	Notifier slack.Notifier
+	Log      *slog.Logger
 }
 
-func NewCortex(cfg *config.Config, sm *sessions.Manager, n slack.Notifier) *Cortex {
-	return &Cortex{Cfg: cfg, Sessions: sm, Notifier: n}
+func NewCortex(cfg *config.Config, sm *sessions.Manager, n slack.Notifier, logger *slog.Logger) *Cortex {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Cortex{Cfg: cfg, Sessions: sm, Notifier: n, Log: logger.With("component", "grpc")}
 }
 
 func (c *Cortex) SendEvent(ctx context.Context, signal *pb.AgentSignal) (*pb.Ack, error) {
 	if err := validateSignal(signal); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+
+	log := c.Log.With("session_id", signal.SessionId, "agent", signal.Agent)
+	log.Debug("agent → cortex: SendEvent", "repo", signal.Repo, "message", signal.Message)
 
 	if err := c.Sessions.Register(signal.SessionId); err != nil {
 		if errors.Is(err, sessions.ErrAlreadyExists) {
@@ -42,6 +50,7 @@ func (c *Cortex) SendEvent(ctx context.Context, signal *pb.AgentSignal) (*pb.Ack
 	thread, err := c.Notifier.Notify(ctx, signal)
 	if err != nil {
 		c.Sessions.Remove(signal.SessionId)
+		log.Error("failed to notify human responder", "err", err)
 		return nil, status.Errorf(codes.Unavailable, "failed to notify human responder: %v", err)
 	}
 
@@ -51,6 +60,7 @@ func (c *Cortex) SendEvent(ctx context.Context, signal *pb.AgentSignal) (*pb.Ack
 			thread.ChannelID, thread.ThreadTS, err)
 	}
 
+	log.Debug("cortex → agent: SendEvent ack", "channel_id", thread.ChannelID, "thread_ts", thread.ThreadTS)
 	return &pb.Ack{
 		Accepted: true,
 		Detail:   "event posted to slack thread " + thread.ChannelID + ":" + thread.ThreadTS,
@@ -67,13 +77,21 @@ func (c *Cortex) WaitForResponse(ctx context.Context, req *pb.SessionRequest) (*
 		timeout = time.Duration(req.TimeoutSeconds) * time.Second
 	}
 
-	return c.Sessions.WaitForResponse(ctx, req.SessionId, timeout), nil
+	c.Log.Debug("agent → cortex: WaitForResponse (blocking)",
+		"session_id", req.SessionId, "timeout", timeout)
+	resp := c.Sessions.WaitForResponse(ctx, req.SessionId, timeout)
+	c.Log.Debug("cortex → agent: WaitForResponse returned",
+		"session_id", req.SessionId, "status", resp.Status.String())
+	return resp, nil
 }
 
 func (c *Cortex) SubmitHumanResponse(_ context.Context, reply *pb.HumanReply) (*pb.Ack, error) {
 	if err := validateReply(reply); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+
+	c.Log.Debug("→ cortex: SubmitHumanResponse",
+		"session_id", reply.SessionId, "responder", reply.Responder, "response", reply.Response)
 
 	if err := c.Sessions.Submit(reply); err != nil {
 		switch {
@@ -86,6 +104,7 @@ func (c *Cortex) SubmitHumanResponse(_ context.Context, reply *pb.HumanReply) (*
 		}
 	}
 
+	c.Log.Debug("cortex: human response recorded, session unblocked", "session_id", reply.SessionId)
 	return &pb.Ack{Accepted: true, Detail: "response recorded"}, nil
 }
 
