@@ -13,12 +13,14 @@ RUN_ARGS ?=
 
 TUNNEL_PORT ?= 23001
 
+AGENT_IMAGE ?= cortex-agent-runtime:dev
+
 PROTOC ?= protoc
 PROTO_DIR ?= proto
 PROTO_FILES := $(wildcard $(PROTO_DIR)/*.proto)
 PROTO_OUT ?= .
 
-.PHONY: help build release run check test vet fmt fmt-check lint clean tidy proto tunnel ci toolchain
+.PHONY: help build release run check test vet fmt fmt-check lint clean tidy proto tunnel ci toolchain agent-image
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "}; /^[a-zA-Z0-9_.-]+:.*## / {printf "%-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -62,6 +64,9 @@ proto: ## Regenerate protobuf bindings from $(PROTO_DIR)
 		--go-grpc_out=$(PROTO_OUT) --go-grpc_opt=module=github.com/mjcramer/cortex \
 		--proto_path=$(PROTO_DIR) \
 		$(PROTO_FILES)
+
+agent-image: ## Build the disposable agent runtime image (Claude Code + toolchain)
+	docker build -t $(AGENT_IMAGE) build/agent-runtime
 
 clean: ## Remove build artifacts
 	rm -rf bin
