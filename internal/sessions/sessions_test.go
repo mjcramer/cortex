@@ -72,6 +72,42 @@ func TestFindsSessionBySlackThread(t *testing.T) {
 	}
 }
 
+func TestRemoveClearsSlackThreadIndex(t *testing.T) {
+	m := sessions.NewManager()
+	if err := m.Register("session-1"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	thread := sessions.ThreadRef{ChannelID: "C123", ThreadTS: "1710000000.1234"}
+	if err := m.AttachSlackThread("session-1", thread); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	m.Remove("session-1")
+
+	if id, ok := m.FindBySlackThread(thread); ok {
+		t.Fatalf("FindBySlackThread = %q, true; want missing", id)
+	}
+}
+
+func TestRejectsSecondResponse(t *testing.T) {
+	m := sessions.NewManager()
+	if err := m.Register("session-1"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	reply := &pb.HumanReply{
+		SessionId: "session-1",
+		Response:  "approved",
+		Responder: "U123",
+		Source:    "slack:C123:1.2",
+	}
+	if err := m.Submit(reply); err != nil {
+		t.Fatalf("first submit: %v", err)
+	}
+	if err := m.Submit(reply); err != sessions.ErrAlreadyResponded {
+		t.Fatalf("second submit = %v, want ErrAlreadyResponded", err)
+	}
+}
+
 func TestTimesOut(t *testing.T) {
 	m := sessions.NewManager()
 	if err := m.Register("session-1"); err != nil {

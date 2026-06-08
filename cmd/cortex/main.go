@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -49,7 +50,21 @@ func main() {
 	}
 	logger.Info("slack auth verified", "team", team, "bot_user", user)
 
-	sm := sessions.NewManager()
+	sessionDir := ""
+	if cfg.StateDir != "" {
+		sessionDir = filepath.Join(cfg.StateDir, "sessions")
+	}
+	sessionStore, err := sessions.NewStore(sessionDir)
+	if err != nil {
+		logger.Error("init session state store", "err", err)
+		os.Exit(1)
+	}
+	if sessionDir == "" {
+		logger.Info("session persistence disabled", "backend", "memory", "hint", "set CORTEX_STATE_DIR to enable")
+	} else {
+		logger.Info("session persistence enabled", "backend", "file", "dir", sessionDir)
+	}
+	sm := sessions.NewManagerWithStore(sessionStore)
 	thinker := claude.NewThinker(cfg.Claude)
 
 	store, err := agents.NewStore(cfg.StateDir)
