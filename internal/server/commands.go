@@ -24,6 +24,9 @@ type CommandsHandler struct {
 }
 
 func NewCommandsHandler(slackApp *slack.App, mgr *agents.Manager, logger *slog.Logger) *CommandsHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &CommandsHandler{Slack: slackApp, Agents: mgr, Logger: logger}
 }
 
@@ -53,6 +56,10 @@ func (h *CommandsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ChannelID:   form.Get("channel_id"),
 		ResponseURL: form.Get("response_url"),
 	}
+
+	h.Logger.Debug("slash command received",
+		"command", cmd.Command, "text", cmd.Text,
+		"user", cmd.UserName, "channel", cmd.ChannelID)
 
 	resp := h.dispatch(r.Context(), cmd)
 	respondJSON(w, resp)
