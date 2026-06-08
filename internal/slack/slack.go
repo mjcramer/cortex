@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -23,12 +24,16 @@ type Notifier interface {
 type App struct {
 	cfg    *config.SlackConfig
 	client *slack.Client
+	log    *slog.Logger
 
 	mu       sync.RWMutex
 	channels map[string]string // agent name -> channel id
 }
 
-func NewApp(cfg *config.SlackConfig) *App {
+func NewApp(cfg *config.SlackConfig, logger *slog.Logger) *App {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	opts := []slack.Option{}
 	if cfg.APIBaseURL != "" && cfg.APIBaseURL != "https://slack.com/api" {
 		opts = append(opts, slack.OptionAPIURL(cfg.APIBaseURL+"/"))
@@ -36,6 +41,7 @@ func NewApp(cfg *config.SlackConfig) *App {
 	return &App{
 		cfg:      cfg,
 		client:   slack.New(cfg.BotToken, opts...),
+		log:      logger.With("component", "slack"),
 		channels: make(map[string]string),
 	}
 }
@@ -92,14 +98,17 @@ func archivedChannelName(channelID string) string {
 
 // PostToChannel sends a plain message to the channel as the bot.
 func (a *App) PostToChannel(ctx context.Context, channelID, text string) error {
+	a.log.Debug("slack post → channel", "channel", channelID, "text", text)
 	_, _, err := a.client.PostMessageContext(ctx, channelID,
 		slack.MsgOptionText(text, false),
 		slack.MsgOptionDisableLinkUnfurl(),
 		slack.MsgOptionDisableMediaUnfurl(),
 	)
 	if err != nil {
+		a.log.Error("slack post failed", "channel", channelID, "err", err)
 		return fmt.Errorf("post to channel %s: %w", channelID, err)
 	}
+	a.log.Debug("slack post ok", "channel", channelID)
 	return nil
 }
 
@@ -109,6 +118,10 @@ func (a *App) Notify(ctx context.Context, signal *pb.AgentSignal) (sessions.Thre
 		return sessions.ThreadRef{}, err
 	}
 
+	a.log.Debug("slack post → agent signal",
+		"agent", signal.Agent, "session_id", signal.SessionId,
+		"channel", channelID, "text", signal.Message)
+
 	postedChannel, ts, err := a.client.PostMessageContext(ctx, channelID,
 		slack.MsgOptionText(formatSignalMessage(signal), false),
 		slack.MsgOptionUsername(signal.Agent),
@@ -116,12 +129,17 @@ func (a *App) Notify(ctx context.Context, signal *pb.AgentSignal) (sessions.Thre
 		slack.MsgOptionDisableMediaUnfurl(),
 	)
 	if err != nil {
+		a.log.Error("slack post (agent signal) failed",
+			"agent", signal.Agent, "session_id", signal.SessionId, "err", err)
 		return sessions.ThreadRef{}, fmt.Errorf("post slack message: %w", err)
 	}
 	if postedChannel == "" || ts == "" {
 		return sessions.ThreadRef{}, errors.New("slack chat.postMessage response missing channel or ts")
 	}
 
+	a.log.Debug("slack post (agent signal) ok",
+		"agent", signal.Agent, "session_id", signal.SessionId,
+		"channel", postedChannel, "thread_ts", ts)
 	return sessions.ThreadRef{ChannelID: postedChannel, ThreadTS: ts}, nil
 }
 
@@ -148,6 +166,7 @@ func (a *App) ensureChannel(ctx context.Context, agent string) (string, error) {
 	a.mu.RUnlock()
 
 	name := a.ChannelNameFor(agent)
+	a.log.Debug("slack ensure channel", "agent", agent, "channel", name)
 	channel, err := a.client.CreateConversationContext(ctx, slack.CreateConversationParams{
 		ChannelName: name,
 		IsPrivate:   false,
@@ -155,10 +174,12 @@ func (a *App) ensureChannel(ctx context.Context, agent string) (string, error) {
 	switch {
 	case err == nil:
 		a.cacheChannel(agent, channel.ID)
+		a.log.Debug("slack created channel", "agent", agent, "channel", name, "channel_id", channel.ID)
 		return channel.ID, nil
 	case isSlackError(err, "name_taken"):
 		return a.adoptExistingChannel(ctx, agent, name)
 	default:
+		a.log.Error("slack create channel failed", "agent", agent, "channel", name, "err", err)
 		return "", fmt.Errorf("create channel %s: %w", name, err)
 	}
 }

@@ -105,6 +105,9 @@ func (a *Agent) handle(msg IncomingMessage) {
 	historySnapshot := append([]Turn(nil), a.history...)
 	a.mu.Unlock()
 
+	a.logger.Debug("agent handling message",
+		"user", msg.UserID, "text", msg.Text, "history_turns", len(historySnapshot))
+
 	respCtx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
 	defer cancel()
 
@@ -114,6 +117,8 @@ func (a *Agent) handle(msg IncomingMessage) {
 		_ = a.replier.PostToChannel(respCtx, a.ChannelID, fmt.Sprintf("_(agent error: %v)_", err))
 		return
 	}
+
+	a.logger.Debug("agent replying", "user", msg.UserID, "text", reply)
 
 	a.mu.Lock()
 	a.history = append(a.history, Turn{Role: "user", Text: msg.Text}, Turn{Role: "assistant", Text: reply})

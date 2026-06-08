@@ -25,6 +25,9 @@ type HTTPHandler struct {
 }
 
 func NewHTTPHandler(sm *sessions.Manager, app *slack.App, mgr *agents.Manager, cmds *CommandsHandler, logger *slog.Logger) *HTTPHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &HTTPHandler{Sessions: sm, Slack: app, Agents: mgr, Commands: cmds, Logger: logger}
 }
 
@@ -56,6 +59,9 @@ func (h *HTTPHandler) slackEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.Logger.Debug("slack event received",
+		"type", event.Type, "inner_type", event.InnerEvent.Type)
+
 	switch event.Type {
 	case slackevents.URLVerification:
 		var challenge struct {
@@ -68,11 +74,16 @@ func (h *HTTPHandler) slackEvents(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io.WriteString(w, challenge.Challenge)
 	case slackevents.CallbackEvent:
-		if inner, ok := event.InnerEvent.Data.(*slackevents.MessageEvent); ok {
+		switch inner := event.InnerEvent.Data.(type) {
+		case *slackevents.MessageEvent:
 			h.handleMessage(inner)
+		default:
+			h.Logger.Debug("ignoring slack callback: not a message event",
+				"inner_type", event.InnerEvent.Type)
 		}
 		w.WriteHeader(http.StatusOK)
 	default:
+		h.Logger.Debug("ignoring slack event: unhandled top-level type", "type", event.Type)
 		w.WriteHeader(http.StatusOK)
 	}
 }
@@ -81,29 +92,48 @@ func (h *HTTPHandler) slackEvents(w http.ResponseWriter, r *http.Request) {
 // messages in an agent's channel become turns in that agent's conversation)
 // or, as a fallback, to a waiting gRPC session keyed by (channel_id, thread_ts).
 func (h *HTTPHandler) handleMessage(event *slackevents.MessageEvent) {
-	if event == nil || event.Type != "message" {
+	if event == nil {
+		return
+	}
+
+	// Log the raw message event before any filtering, so a dropped message is
+	// always visible (with the reason it was dropped) at debug.
+	h.Logger.Debug("slack message event",
+		"channel", event.Channel, "user", event.User, "subtype", event.SubType,
+		"bot_id", event.BotID, "thread_ts", event.ThreadTimeStamp, "text", event.Text)
+
+	if event.Type != "message" {
+		h.Logger.Debug("ignoring slack message: not a message event", "type", event.Type)
 		return
 	}
 	if event.SubType != "" || event.BotID != "" {
+		h.Logger.Debug("ignoring slack message: bot or message subtype",
+			"subtype", event.SubType, "bot_id", event.BotID)
 		return
 	}
 	if event.Channel == "" || event.User == "" {
+		h.Logger.Debug("ignoring slack message: missing channel or user")
 		return
 	}
 	text := trimSpace(event.Text)
 	if text == "" {
+		h.Logger.Debug("ignoring slack message: empty text", "channel", event.Channel)
 		return
 	}
 
 	// Top-level channel message → agent (if one owns this channel).
 	if event.ThreadTimeStamp == "" && h.Agents != nil {
 		if h.Agents.RouteMessage(event.Channel, agents.IncomingMessage{UserID: event.User, Text: text}) {
+			h.Logger.Debug("routed slack message to agent",
+				"channel", event.Channel, "user", event.User)
 			return
 		}
 	}
 
 	// Otherwise treat it as a threaded reply to a pending session.
 	if event.ThreadTimeStamp == "" {
+		h.Logger.Debug("ignoring slack message: no agent owns this channel and it is not a thread reply",
+			"channel", event.Channel, "user", event.User)
 		return
 	}
 	reply := slack.HumanThreadReply(event)
@@ -112,6 +142,8 @@ func (h *HTTPHandler) handleMessage(event *slackevents.MessageEvent) {
 	}
 	sessionID, ok := h.Sessions.FindBySlackThread(reply.Thread)
 	if !ok {
+		h.Logger.Debug("slack thread reply has no matching session",
+			"channel", reply.Thread.ChannelID, "thread_ts", reply.Thread.ThreadTS)
 		return
 	}
 	if err := h.Sessions.Submit(&pb.HumanReply{
@@ -120,10 +152,15 @@ func (h *HTTPHandler) handleMessage(event *slackevents.MessageEvent) {
 		Responder: reply.UserID,
 		Source:    fmt.Sprintf("slack:%s:%s", reply.Thread.ChannelID, reply.Thread.ThreadTS),
 	}); err != nil {
-		if !errors.Is(err, sessions.ErrAlreadyResponded) && !errors.Is(err, sessions.ErrNotFound) {
-			// no logger here yet; drop silently
+		if errors.Is(err, sessions.ErrAlreadyResponded) || errors.Is(err, sessions.ErrNotFound) {
+			h.Logger.Debug("ignoring benign reply submission error",
+				"session_id", sessionID, "error", err)
+			return
 		}
+		h.Logger.Error("failed to record human reply", "session_id", sessionID, "error", err)
+		return
 	}
+	h.Logger.Info("recorded human reply", "session_id", sessionID, "responder", reply.UserID)
 }
 
 func trimSpace(s string) string {

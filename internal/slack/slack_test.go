@@ -80,7 +80,7 @@ func newSlackMock(t *testing.T) (*App, *slackMock) {
 		SigningSecret: "secret",
 		ChannelPrefix: "agent-",
 		APIBaseURL:    srv.URL,
-	})
+	}, nil)
 	return app, m
 }
 
