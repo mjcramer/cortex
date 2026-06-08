@@ -17,8 +17,8 @@ type Config struct {
 	BindAddr           string
 	DefaultWaitTimeout time.Duration
 	LogLevel           string
-	// StateDir is where agent state is persisted. Empty disables persistence
-	// (in-memory only). Set via CORTEX_STATE_DIR.
+	// StateDir is where runtime state is persisted. Empty disables durable
+	// persistence. Set via CORTEX_STATE_DIR.
 	StateDir string
 	Slack    *SlackConfig
 	Claude   *ClaudeConfig
