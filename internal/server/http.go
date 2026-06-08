@@ -59,6 +59,9 @@ func (h *HTTPHandler) slackEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.Logger.Debug("slack event received",
+		"type", event.Type, "inner_type", event.InnerEvent.Type)
+
 	switch event.Type {
 	case slackevents.URLVerification:
 		var challenge struct {
@@ -71,11 +74,16 @@ func (h *HTTPHandler) slackEvents(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io.WriteString(w, challenge.Challenge)
 	case slackevents.CallbackEvent:
-		if inner, ok := event.InnerEvent.Data.(*slackevents.MessageEvent); ok {
+		switch inner := event.InnerEvent.Data.(type) {
+		case *slackevents.MessageEvent:
 			h.handleMessage(inner)
+		default:
+			h.Logger.Debug("ignoring slack callback: not a message event",
+				"inner_type", event.InnerEvent.Type)
 		}
 		w.WriteHeader(http.StatusOK)
 	default:
+		h.Logger.Debug("ignoring slack event: unhandled top-level type", "type", event.Type)
 		w.WriteHeader(http.StatusOK)
 	}
 }
@@ -84,23 +92,34 @@ func (h *HTTPHandler) slackEvents(w http.ResponseWriter, r *http.Request) {
 // messages in an agent's channel become turns in that agent's conversation)
 // or, as a fallback, to a waiting gRPC session keyed by (channel_id, thread_ts).
 func (h *HTTPHandler) handleMessage(event *slackevents.MessageEvent) {
-	if event == nil || event.Type != "message" {
+	if event == nil {
+		return
+	}
+
+	// Log the raw message event before any filtering, so a dropped message is
+	// always visible (with the reason it was dropped) at debug.
+	h.Logger.Debug("slack message event",
+		"channel", event.Channel, "user", event.User, "subtype", event.SubType,
+		"bot_id", event.BotID, "thread_ts", event.ThreadTimeStamp, "text", event.Text)
+
+	if event.Type != "message" {
+		h.Logger.Debug("ignoring slack message: not a message event", "type", event.Type)
 		return
 	}
 	if event.SubType != "" || event.BotID != "" {
+		h.Logger.Debug("ignoring slack message: bot or message subtype",
+			"subtype", event.SubType, "bot_id", event.BotID)
 		return
 	}
 	if event.Channel == "" || event.User == "" {
+		h.Logger.Debug("ignoring slack message: missing channel or user")
 		return
 	}
 	text := trimSpace(event.Text)
 	if text == "" {
+		h.Logger.Debug("ignoring slack message: empty text", "channel", event.Channel)
 		return
 	}
-
-	h.Logger.Debug("slack message received",
-		"channel", event.Channel, "user", event.User,
-		"thread_ts", event.ThreadTimeStamp, "text", text)
 
 	// Top-level channel message → agent (if one owns this channel).
 	if event.ThreadTimeStamp == "" && h.Agents != nil {
