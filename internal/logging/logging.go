@@ -135,10 +135,12 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 
 	// Collect attrs (handler-attached + record-attached), pulling out err/error
 	// and rendering bulky values as readable blocks instead of escaped inline text.
+	type kv struct{ key, val string }
 	var (
 		errVal   string
 		hasErr   bool
-		attrBuf  strings.Builder
+		pairs    []kv
+		maxKey   int
 		blockBuf strings.Builder
 	)
 	emit := func(a slog.Attr) {
@@ -154,15 +156,9 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 			blockBuf.WriteString(block)
 			return
 		}
-		attrBuf.WriteByte(' ')
-		if h.color {
-			attrBuf.WriteString(ansiDim)
-		}
-		attrBuf.WriteString(a.Key)
-		attrBuf.WriteByte('=')
-		attrBuf.WriteString(quoteIfNeeded(inlineValue(a.Value)))
-		if h.color {
-			attrBuf.WriteString(ansiReset)
+		pairs = append(pairs, kv{a.Key, quoteIfNeeded(inlineValue(a.Value))})
+		if len(a.Key) > maxKey {
+			maxKey = len(a.Key)
 		}
 	}
 	for _, a := range h.attrs {
@@ -172,8 +168,20 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 		emit(a)
 		return true
 	})
-	sb.WriteString(attrBuf.String())
+
+	// End the message line, then render each attribute on its own indented,
+	// key-aligned line in the same dim/gray as before.
 	sb.WriteByte('\n')
+	for _, p := range pairs {
+		if h.color {
+			sb.WriteString(ansiDim)
+		}
+		fmt.Fprintf(&sb, "    %-*s = %s", maxKey, p.key, p.val)
+		if h.color {
+			sb.WriteString(ansiReset)
+		}
+		sb.WriteByte('\n')
+	}
 	sb.WriteString(blockBuf.String())
 
 	// %boldRed(%exception) on the following line, if present.
